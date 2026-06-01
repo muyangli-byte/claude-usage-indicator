@@ -1,0 +1,5 @@
+# Claude 用量指示器的 Python 依赖
+curl_cffi>=0.9,<1.0      # 伪装 Chrome TLS 指纹，过 Cloudflare
+browser_cookie3>=0.20    # 从 Chrome 自动读取 sessionKey
+PyGObject>=3.42,<3.52    # GTK/AppIndicator 顶栏；<3.52 保持用 girepository-1.0，避免 fresh 机器源码构建失败
+pycairo>=1.20,<2.0       # PyGObject 依赖

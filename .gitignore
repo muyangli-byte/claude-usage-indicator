@@ -1,0 +1,11 @@
+# 虚拟环境与字节码
+venv/
+__pycache__/
+*.pyc
+
+# Claude Code 本地配置（含敏感的本机权限规则，绝不可提交）
+.claude/
+
+# 运行期数据 / 备份
+diagnostics/
+*.bak.*
