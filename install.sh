@@ -27,7 +27,9 @@ fi
 
 # ---- 1. 系统依赖（需要 sudo）----
 log "安装系统依赖（需要 sudo 授权）..."
-sudo apt-get update -y
+# apt-get update 容错：机器上常有无关的第三方源签名/网络出错，不该因此中断整个安装。
+# 真正关键的是下面的 apt-get install 能否从正常源装到所需包。
+sudo apt-get update -y || log "apt-get update 报错（可能是无关的第三方源），跳过更新、继续安装所需包..."
 sudo apt-get install -y \
   build-essential python3 python3-venv python3-dev \
   python3-gi gir1.2-gtk-3.0 gir1.2-appindicator3-0.1 gir1.2-notify-0.7 \
