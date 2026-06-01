@@ -86,7 +86,7 @@ fi
 log "完成！当前版本 v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?')"
 echo
 echo "  ▸ 前置条件：在 Chrome 里登录 https://claude.ai（无需常开标签页）"
-echo "  ▸ 约 30 秒后顶栏开始显示用量；若显示「⚠ 登录已过期」请到 Chrome 重新登录"
+echo "  ▸ 几秒内顶栏开始显示用量；若显示「⚠ 登录已过期」请到 Chrome 重新登录"
 echo "  ▸ 常用命令："
 echo "      $APP --check     # 检查更新"
 echo "      $APP --update    # 更新到最新版"

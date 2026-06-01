@@ -9,10 +9,15 @@ Claude 用量顶栏指示器（纯 Python，方案 B）。
      （普通 requests/curl 会被 Cloudflare 以 TLS 指纹拦截，必须用 curl_cffi）
   3. 解析 JSON，更新 GTK AppIndicator 顶栏
 
-健壮性（应对 claude.ai 接口/结构变动）：
-  - 失败分类：auth / cloudflare / schema / http / network / cookie，各给不同提示与通知
-  - schema 校验：必需字段缺失/类型不对 -> 报「接口结构变了」并把原始响应 dump 到磁盘
-  - 版本检查：每天比对仓库里的 VERSION，有新版只通知（不自动更新），靠 `--update` 手动升级
+刷新策略（自适应）：
+  - claude.ai 没有推送通道，只能轮询。数据在变（活跃使用）时快轮询(~10s)≈准实时，
+    长时间无变化时自动退避到慢轮询(90s)，出错时按错误间隔重试。
+  - 倒计时等显示值在「渲染层」每秒即时重算，所以 2h57m 会平滑跳动，不依赖轮询。
+
+健康监测（心跳）：
+  - 每次轮询就是一次健康检查。失败分类 auth/cloudflare/schema/http/network/cookie，
+    进入异常立刻弹桌面通知；持续异常每 30 分钟再提醒一次。
+  - schema 专门检测「接口结构变化」：必需字段缺失/类型不对时报警并把原始响应 dump 到磁盘。
 """
 from __future__ import annotations
 
@@ -27,7 +32,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-# ---- 仓库信息（创建 GitHub 仓库时把 muyangli-byte 替换成真实用户名）----
+# ---- 仓库信息 ----
 GITHUB_OWNER = "muyangli-byte"
 GITHUB_REPO = "claude-usage-indicator"
 
@@ -49,7 +54,10 @@ __version__ = _read_version()
 
 
 # ===================== 配置 =====================
-POLL_INTERVAL_S = 30           # 轮询间隔（秒）。别设太小：直连 API 太频繁可能被限流
+POLL_FAST_S = 10            # 数据在变（活跃使用）时的快轮询间隔
+POLL_SLOW_S = 90            # 长时间无变化时退避到的慢轮询间隔
+POLL_ERROR_S = 60           # 出错时的重试间隔（避免猛打一个失败/被拦的接口）
+RENOTIFY_BAD_S = 1800       # 持续异常时，每 30 分钟再提醒一次
 REQUEST_TIMEOUT_S = 20
 UPDATE_CHECK_INTERVAL_S = 86400  # 每天查一次新版本
 USAGE_PAGE_URL = "https://claude.ai/new#settings/usage"
@@ -69,15 +77,11 @@ def _read_config() -> dict:
 
 
 def load_credentials() -> tuple[Optional[str], Optional[str]]:
-    """返回 (session_key, org_id)。优先浏览器 cookie，其次配置文件。
-
-    若所有浏览器都抛异常（而不是「没有该 cookie」），视为 CookieError。
-    """
+    """返回 (session_key, org_id)。优先浏览器 cookie，其次配置文件。"""
     import browser_cookie3 as bc3
 
     sk = org = None
-    errors = 0
-    tried = 0
+    errors = tried = 0
     for name in BROWSERS:
         fn = getattr(bc3, name, None)
         if fn is None:
@@ -97,7 +101,6 @@ def load_credentials() -> tuple[Optional[str], Optional[str]]:
     sk = sk or cfg.get("session_key")
     org = org or cfg.get("org_id")
 
-    # 配置文件也没有、且每个尝试过的浏览器都报错 -> 大概率是 keyring/权限问题
     if sk is None and tried > 0 and errors == tried and not cfg:
         raise CookieError("无法读取任何浏览器 cookie（keyring 可能未解锁）")
     return sk, org
@@ -140,7 +143,7 @@ def dump_diagnostics(kind: str, status_code, text: str) -> str:
 
 
 def fetch_usage(session_key: str, org_id: str) -> dict:
-    """请求用量接口，返回已校验的字段 dict。失败抛上面的分类异常。"""
+    """请求用量接口，返回已校验的原始值 dict。失败抛上面的分类异常。"""
     from curl_cffi import requests as creq
 
     url = f"https://claude.ai/api/organizations/{org_id}/usage"
@@ -161,20 +164,17 @@ def fetch_usage(session_key: str, org_id: str) -> dict:
         raise ConnectionError(str(e)[:120])
 
     ct = r.headers.get("content-type", "")
-
     if r.status_code in (401, 403):
         if "text/html" in ct and _is_challenge(r.text):
             dump_diagnostics("cloudflare", r.status_code, r.text)
             raise CloudflareError(f"HTTP {r.status_code} 被 Cloudflare 挑战拦截")
         raise AuthError(f"HTTP {r.status_code}")
-
     if r.status_code != 200:
         if _is_challenge(r.text):
             dump_diagnostics("cloudflare", r.status_code, r.text)
             raise CloudflareError(f"HTTP {r.status_code} 挑战页")
         raise RuntimeError(f"HTTP {r.status_code}")
 
-    # 200
     try:
         data = r.json()
     except Exception:
@@ -188,7 +188,7 @@ def fetch_usage(session_key: str, org_id: str) -> dict:
 
 
 def validate_and_extract(data, raw_text: str = "") -> dict:
-    """校验 JSON 契约并抽取字段。结构不符抛 SchemaError 并 dump 原始响应。"""
+    """校验 JSON 契约并抽取原始值。结构不符抛 SchemaError 并 dump 原始响应。"""
     if not isinstance(data, dict):
         dump_diagnostics("schema", 200, raw_text or json.dumps(data)[:20000])
         raise SchemaError("顶层不是对象")
@@ -200,7 +200,7 @@ def validate_and_extract(data, raw_text: str = "") -> dict:
         if not isinstance(sub.get("utilization"), (int, float)):
             dump_diagnostics("schema", 200, raw_text or json.dumps(data))
             raise SchemaError(f"{key}.utilization 不是数字（接口结构可能变了）")
-    return json_to_fields(data)
+    return json_to_raw(data)
 
 
 def _parse_iso(s: Optional[str]) -> Optional[datetime]:
@@ -215,15 +215,30 @@ def _parse_iso(s: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def _fmt_pct(obj) -> str:
-    if not isinstance(obj, dict):
-        return "--"
-    u = obj.get("utilization")
+def json_to_raw(j: dict) -> dict:
+    """抽取原始数值/时间（不做格式化，格式化留到渲染层即时计算）。"""
+    def util(o):
+        return o.get("utilization") if isinstance(o, dict) else None
+
+    def reset(o):
+        return _parse_iso(o.get("resets_at")) if isinstance(o, dict) else None
+
+    return dict(
+        five_hour_util=util(j.get("five_hour")),
+        five_hour_reset=reset(j.get("five_hour")),
+        seven_day_util=util(j.get("seven_day")),
+        seven_day_reset=reset(j.get("seven_day")),
+        sonnet_util=util(j.get("seven_day_sonnet")),
+        opus_util=util(j.get("seven_day_opus")),
+    )
+
+
+def _pct(u) -> str:
     return "--" if u is None else f"{int(round(u))}%"
 
 
 def _fmt_countdown(dt: Optional[datetime]) -> str:
-    """到重置还剩多久 -> '4h50m' / '50m'。"""
+    """到重置还剩多久 -> '4h50m' / '50m'（每次调用按当前时间算）。"""
     if dt is None:
         return "--"
     secs = (dt - datetime.now(timezone.utc)).total_seconds()
@@ -242,19 +257,6 @@ def _fmt_resetday(dt: Optional[datetime]) -> str:
     ap = loc.strftime("%p").lower()
     wd = loc.strftime("%a")
     return f"{wd} {h12}:{loc.minute:02d}{ap}" if loc.minute else f"{wd} {h12}{ap}"
-
-
-def json_to_fields(j: dict) -> dict:
-    fh = j.get("five_hour") or {}
-    sd = j.get("seven_day") or {}
-    return dict(
-        current_session_used=_fmt_pct(fh),
-        current_session_reset=_fmt_countdown(_parse_iso(fh.get("resets_at"))),
-        all_models_used=_fmt_pct(sd),
-        all_models_reset=_fmt_resetday(_parse_iso(sd.get("resets_at"))),
-        sonnet_used=_fmt_pct(j.get("seven_day_sonnet")),
-        opus_used=_fmt_pct(j.get("seven_day_opus")),
-    )
 
 
 # ===================== 版本检查 =====================
@@ -286,39 +288,63 @@ def remote_is_newer(remote: Optional[str]) -> bool:
 # ===================== 数据模型 =====================
 @dataclass
 class UsageData:
-    current_session_used: str = "--"
-    current_session_reset: str = "--"
-    all_models_used: str = "--"
-    all_models_reset: str = "--"
-    sonnet_used: str = "--"
-    opus_used: str = "--"
+    # 存原始值；显示字符串在渲染层即时计算（倒计时才能每秒平滑走动）
+    five_hour_util: Optional[float] = None
+    five_hour_reset: Optional[datetime] = None
+    seven_day_util: Optional[float] = None
+    seven_day_reset: Optional[datetime] = None
+    sonnet_util: Optional[float] = None
+    opus_util: Optional[float] = None
     status: str = "init"        # init|ok|auth|cloudflare|schema|http|network|cookie
     error_msg: str = ""
     received_at: Optional[datetime] = None     # 最近一次成功拉取
-    update_available: Optional[str] = None     # 检测到的更高版本号
+    changed_at: Optional[datetime] = None      # 最近一次数据「真正」变化
+    consecutive_failures: int = 0
+    update_available: Optional[str] = None
 
     STATUS_LABEL = {
-        "ok": "ok",
-        "auth": "登录已过期",
-        "cloudflare": "Cloudflare 拦截",
-        "schema": "接口结构变了",
-        "http": "HTTP 错误",
-        "network": "网络错误",
-        "cookie": "读 cookie 失败",
-        "init": "启动中",
+        "ok": "ok", "auth": "登录已过期", "cloudflare": "Cloudflare 拦截",
+        "schema": "接口结构变了", "http": "HTTP 错误", "network": "网络错误",
+        "cookie": "读 cookie 失败", "init": "启动中",
     }
 
+    # —— 即时计算的显示值 ——
+    @property
+    def current_session_used(self) -> str:
+        return _pct(self.five_hour_util)
+
+    @property
+    def current_session_reset(self) -> str:
+        return _fmt_countdown(self.five_hour_reset)
+
+    @property
+    def all_models_used(self) -> str:
+        return _pct(self.seven_day_util)
+
+    @property
+    def all_models_reset(self) -> str:
+        return _fmt_resetday(self.seven_day_reset)
+
+    @property
+    def sonnet_used(self) -> str:
+        return _pct(self.sonnet_util)
+
+    @property
+    def opus_used(self) -> str:
+        return _pct(self.opus_util)
+
+    def snapshot(self) -> tuple:
+        """用于「数据是否真的变了」的比较：只看原始值，不看随时间走动的倒计时。"""
+        return (self.five_hour_util, self.seven_day_util, self.sonnet_util,
+                self.opus_util, self.five_hour_reset, self.seven_day_reset)
+
     def short_label(self) -> str:
-        base = (
-            f"Cur {self.current_session_used} {self.current_session_reset} "
-            f"| All {self.all_models_used} {self.all_models_reset}"
-        )
+        base = (f"Cur {self.current_session_used} {self.current_session_reset} "
+                f"| All {self.all_models_used} {self.all_models_reset}")
         if self.received_at is None:
             return {
-                "auth": "⚠ Claude 登录已过期",
-                "cloudflare": "⚠ Cloudflare 拦截",
-                "schema": "⚠ 接口结构变了",
-                "cookie": "⚠ 读 cookie 失败",
+                "auth": "⚠ Claude 登录已过期", "cloudflare": "⚠ Cloudflare 拦截",
+                "schema": "⚠ 接口结构变了", "cookie": "⚠ 读 cookie 失败",
             }.get(self.status, "Claude usage waiting...")
         return ("⚠ " + base) if self.status != "ok" else base
 
@@ -337,15 +363,28 @@ class UsageStore:
         self._lock = threading.Lock()
         self._data = UsageData()
 
-    def apply(self, status: str, msg: str, fields: Optional[dict]) -> None:
+    def apply(self, status: str, msg: str, fields: Optional[dict]) -> bool:
+        """更新数据，返回「原始值是否相比上次发生了变化」。"""
         with self._lock:
             d = self._data
-            if fields:  # 成功才更新数值与时间；失败保留上次数值
+            changed = False
+            if fields is not None:
+                new_snap = (fields["five_hour_util"], fields["seven_day_util"],
+                            fields["sonnet_util"], fields["opus_util"],
+                            fields["five_hour_reset"], fields["seven_day_reset"])
+                changed = d.received_at is not None and new_snap != d.snapshot()
                 for k, v in fields.items():
                     setattr(d, k, v)
-                d.received_at = datetime.now()
+                now = datetime.now()
+                d.received_at = now
+                if changed or d.changed_at is None:
+                    d.changed_at = now
+                d.consecutive_failures = 0
+            else:
+                d.consecutive_failures += 1
             d.status = status
             d.error_msg = msg
+            return changed
 
     def set_update(self, version: Optional[str]) -> None:
         with self._lock:
@@ -359,7 +398,7 @@ class UsageStore:
 STORE = UsageStore()
 
 
-# ===================== 轮询线程 =====================
+# ===================== 轮询线程（自适应） =====================
 class Poller(threading.Thread):
     def __init__(self, app: "ClaudeIndicatorApp") -> None:
         super().__init__(daemon=True)
@@ -368,6 +407,7 @@ class Poller(threading.Thread):
         self._sk: Optional[str] = None
         self._org: Optional[str] = None
         self._last_update_check = 0.0
+        self._stable = 0  # 连续无变化的轮询次数（用于退避）
 
     def wake(self) -> None:
         self._wake.set()
@@ -394,8 +434,7 @@ class Poller(threading.Thread):
         try:
             return "ok", "", fetch_usage(sk, org)
         except AuthError:
-            # sessionKey 可能轮换了，强制重读 cookie 再试一次
-            try:
+            try:  # sessionKey 可能轮换了，强制重读 cookie 再试一次
                 sk, org = self._creds(force=True)
                 return "ok", "", fetch_usage(sk, org)
             except AuthError as e:
@@ -423,21 +462,35 @@ class Poller(threading.Thread):
         remote = fetch_remote_version()
         STORE.set_update(remote if remote_is_newer(remote) else None)
 
+    def _next_interval(self, status: str, changed: bool) -> int:
+        if status != "ok":
+            self._stable = 0
+            return POLL_ERROR_S
+        if changed:
+            self._stable = 0
+            return POLL_FAST_S
+        # 无变化：指数退避 10 -> 20 -> 40 -> 80 -> 90(封顶)
+        self._stable += 1
+        return min(POLL_SLOW_S, POLL_FAST_S * (2 ** min(self._stable, 5)))
+
     def run(self) -> None:
+        from gi.repository import GLib
         while True:
             try:
                 status, msg, fields = self._do_fetch()
             except Exception as e:  # 兜底，绝不让轮询线程挂掉
                 status, msg, fields = "http", repr(e)[:120], None
-            STORE.apply(status, msg, fields)
+            changed = STORE.apply(status, msg, fields)
             try:
                 self._maybe_check_update()
             except Exception:
                 pass
-            print(f"[poll] {status} {STORE.get().short_label()}" + (f" :: {msg}" if msg else ""), flush=True)
-            from gi.repository import GLib
+            interval = self._next_interval(status, changed)
+            tag = ", changed" if changed else ""
+            print(f"[poll] {status} {STORE.get().short_label()} (next {interval}s{tag})"
+                  + (f" :: {msg}" if msg else ""), flush=True)
             GLib.idle_add(self.app.refresh_ui)
-            self._wake.wait(POLL_INTERVAL_S)
+            self._wake.wait(interval)
             self._wake.clear()
 
 
@@ -462,8 +515,7 @@ def build_app():
     class ClaudeIndicatorApp:
         def __init__(self) -> None:
             self.indicator = AppIndicator3.Indicator.new(
-                APP_NAME,
-                "network-transmit-receive",
+                APP_NAME, "network-transmit-receive",
                 AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
             )
             self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
@@ -477,7 +529,7 @@ def build_app():
             self.item_opus = self._info("Opus (weekly): --")
             self.item_status = self._info("Status: --")
             self.item_updated = self._info("Updated: --")
-            self.item_update = self._info("")  # 有新版本时才显示
+            self.item_update = self._info("")
 
             self.menu.append(Gtk.SeparatorMenuItem())
             self._action("Refresh now", self.on_refresh_now)
@@ -488,11 +540,12 @@ def build_app():
             self.indicator.set_menu(self.menu)
 
             self._last_status = "init"
+            self._last_notify_t = 0.0
             self._notified_update = None
             self._notification = None
             self.poller: Optional[Poller] = None
 
-            GLib.timeout_add_seconds(1, self._tick)
+            GLib.timeout_add_seconds(1, self._tick)  # 每秒重绘：倒计时平滑走动 + 健康判断
 
         def _info(self, text: str):
             item = Gtk.MenuItem(label=text)
@@ -520,6 +573,8 @@ def build_app():
             self.item_opus.set_label(f"Opus (weekly): {d.opus_used}")
             self.item_opus.set_visible(d.opus_used != "--")
             status_text = UsageData.STATUS_LABEL.get(d.status, d.status)
+            if d.status != "ok" and d.consecutive_failures > 1:
+                status_text += f"（连续 {d.consecutive_failures} 次）"
             extra = f" — {d.error_msg}" if d.error_msg else ""
             self.item_status.set_label(f"Status: {status_text}{extra}")
             self.item_updated.set_label(f"Updated: {d.received_clock_text()} ({d.refreshed_ago_text()})")
@@ -530,12 +585,14 @@ def build_app():
             else:
                 self.item_update.set_visible(False)
 
-            # 边沿触发通知：进入异常状态时
-            if d.status not in ("ok", "init") and d.status != self._last_status:
-                self._notify_status(d)
+            # 心跳/健康告警：进入异常立刻提醒；持续异常每 30 分钟再提醒一次
+            if d.status not in ("ok", "init"):
+                now_t = time.time()
+                if d.status != self._last_status or (now_t - self._last_notify_t) > RENOTIFY_BAD_S:
+                    self._notify_status(d)
+                    self._last_notify_t = now_t
             self._last_status = d.status
 
-            # 边沿触发通知：发现新版本
             if d.update_available and d.update_available != self._notified_update:
                 self._notify_update(d.update_available)
                 self._notified_update = d.update_available
@@ -609,13 +666,12 @@ def run_gui() -> None:
     poller = Poller(app)
     app.poller = poller
     poller.start()
-    print(f"[poller] running v{__version__}, interval={POLL_INTERVAL_S}s", flush=True)
+    print(f"[poller] running v{__version__}, fast={POLL_FAST_S}s slow={POLL_SLOW_S}s", flush=True)
     Gtk.main()
 
 
 # ===================== CLI =====================
 def cmd_once() -> int:
-    """拉取一次并打印结果（调试用，不起 GUI）。"""
     try:
         sk, org = load_credentials()
     except CookieError as e:
@@ -632,13 +688,15 @@ def cmd_once() -> int:
     except Exception as e:
         print(f"{type(e).__name__}: {e}")
         return 1
-    for k, v in fields.items():
-        print(f"  {k}: {v}")
+    d = UsageData(status="ok", received_at=datetime.now(), **fields)
+    print(f"  current session : {d.current_session_used}  (reset {d.current_session_reset})")
+    print(f"  all models (wk) : {d.all_models_used}  (reset {d.all_models_reset})")
+    print(f"  sonnet (wk)     : {d.sonnet_used}")
+    print(f"  opus (wk)       : {d.opus_used}")
     return 0
 
 
 def cmd_update() -> int:
-    """重新运行安装脚本以更新到最新版。"""
     url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/install.sh"
     print(f"[update] 拉取并运行 {url}")
     return subprocess.call(f"curl -fsSL {url} | bash", shell=True)
