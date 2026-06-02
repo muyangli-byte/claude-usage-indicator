@@ -180,6 +180,38 @@ def _profile_cookie_files(name: str) -> list:
     return out
 
 
+def _profile_label(cf: str) -> str:
+    """从 cookie 路径推出 profile 名（Default / Profile 3 …），兼容新版 Network/ 子目录。"""
+    d = os.path.dirname(cf)
+    if os.path.basename(d) == "Network":
+        d = os.path.dirname(d)
+    return os.path.basename(d)
+
+
+def _cookie_presence(cookie_file: str) -> tuple:
+    """只看某 profile 是否存在 claude.ai 的 sessionKey cookie + 加密版本前缀（v10/v11）。
+    不解密、不打印任何密钥；用于 --doctor 报告。返回 (有没有, 'v11'|'v10'|None)。"""
+    tmp = None
+    try:
+        tmp = tempfile.mktemp()
+        shutil.copy2(cookie_file, tmp)
+        con = sqlite3.connect(f"file:{tmp}?mode=ro", uri=True)
+        r = con.execute("SELECT encrypted_value FROM cookies "
+                        "WHERE name='sessionKey' AND host_key LIKE '%claude.ai'").fetchone()
+        con.close()
+        if r and r[0]:
+            return True, bytes(r[0][:3]).decode("ascii", "replace")
+        return False, None
+    except Exception:
+        return False, None
+    finally:
+        if tmp:
+            try:
+                os.unlink(tmp)
+            except Exception:
+                pass
+
+
 def _derive_key(pw: bytes) -> bytes:
     from Cryptodome.Protocol.KDF import PBKDF2
     from Cryptodome.Hash import SHA1
@@ -1064,6 +1096,85 @@ def cmd_once() -> int:
     return 0
 
 
+def cmd_doctor(lang: str = "en") -> int:
+    """扫描凭证并打印自检报告（双语，绝不泄露任何密钥）。
+    流程：列出每个浏览器 profile 是否有 claude.ai 登录 cookie → 读取并校验 sessionKey/org →
+    用拿到的凭证真打一次用量 API 确认可用。拿到且能用返回 0，否则 1。
+    install.sh 用它在「激活服务」前做预检；用户也可随时 `--doctor` 自查。"""
+    import getpass
+    zh = lang == "zh"
+
+    def line(z: str, e: str) -> None:
+        print(z if zh else e)
+
+    print("=" * 52)
+    line(" Claude 用量指示器 —— 登录态自检", " Claude Usage Indicator — login self-check")
+    print("=" * 52)
+    user = getpass.getuser()
+    line(f"系统用户：{user}", f"System user: {user}")
+    line(f"桌面环境：{os.environ.get('XDG_CURRENT_DESKTOP', '?')}",
+         f"Desktop:     {os.environ.get('XDG_CURRENT_DESKTOP', '?')}")
+    print()
+    line("扫描浏览器 profile（找 claude.ai 登录 cookie）：",
+         "Scanning browser profiles for a claude.ai login cookie:")
+    any_cookie = False
+    for name in BROWSERS:
+        for cf in _profile_cookie_files(name):
+            present, prefix = _cookie_presence(cf)
+            if present:
+                any_cookie = True
+                line(f"  ✓ [{name}] {_profile_label(cf)} —— 有登录 cookie（加密 {prefix}）",
+                     f"  ✓ [{name}] {_profile_label(cf)} — has login cookie (enc {prefix})")
+            else:
+                line(f"  · [{name}] {_profile_label(cf)} —— 无",
+                     f"  · [{name}] {_profile_label(cf)} — none")
+    if not any_cookie:
+        line("  （没找到任何 claude.ai 登录 cookie）", "  (no claude.ai login cookie found anywhere)")
+    print()
+
+    sk = org = None
+    try:
+        sk, org = load_credentials()
+    except CookieError:
+        pass
+    if _read_config().get("session_key"):
+        line("凭证来源：config.json 显式配置（优先）", "Source: config.json override (takes precedence)")
+
+    sk_ok, org_ok = _valid_sk(sk), _valid_org(org)
+    line(f"sessionKey：{'✓ 已获取并通过格式校验' if sk_ok else '✗ 未获取到有效值'}",
+         f"sessionKey: {'✓ obtained and validated' if sk_ok else '✗ not obtained'}")
+    line(f"org_id    ：{'✓ ' + org if org_ok else '✗ 未获取'}",
+         f"org_id    : {'✓ ' + org if org_ok else '✗ not obtained'}")
+
+    if not (sk_ok and org_ok):
+        print()
+        line("→ 登录态还没就绪，请确认：", "→ Login not ready yet. Please make sure:")
+        line("  1) 已在 Chrome/Chromium/Brave/Edge 登录 https://claude.ai",
+             "  1) you're logged into https://claude.ai in Chrome/Chromium/Brave/Edge")
+        line("  2) 系统钥匙环已解锁（GNOME keyring / KDE KWallet）",
+             "  2) your keyring is unlocked (GNOME keyring / KDE KWallet)")
+        line("  3) 仍不行可在 ~/.config/claude-usage-indicator/config.json 填 session_key+org_id",
+             "  3) or set session_key+org_id in ~/.config/claude-usage-indicator/config.json")
+        return 1
+
+    print()
+    line("用拿到的凭证试拉一次用量，确认 sessionKey 真的能用……",
+         "Trying a live usage fetch to confirm the sessionKey actually works…")
+    try:
+        fields = fetch_usage(sk, org)
+    except Exception as e:
+        line(f"  ✗ 拉取失败：{type(e).__name__}: {e}", f"  ✗ fetch failed: {type(e).__name__}: {e}")
+        line("  （sessionKey 可能已过期：请在浏览器重新登录 claude.ai 再试）",
+             "  (sessionKey may be expired: re-login to claude.ai and retry)")
+        return 1
+    d = UsageData(status="ok", received_at=datetime.now(), **fields)
+    line(f"  ✓ 成功！当前会话 {d.current_session_used}，本周全模型 {d.all_models_used}",
+         f"  ✓ Success! Current session {d.current_session_used}, weekly all-models {d.all_models_used}")
+    print()
+    line("✅ 一切就绪，可以安装。", "✅ All set — ready to install.")
+    return 0
+
+
 def cmd_update() -> int:
     url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/install.sh"
     print(f"[update] 拉取并运行 {url}")
@@ -1145,8 +1256,12 @@ def main() -> None:
     p.add_argument("--check", action="store_true", help="检查是否有新版本")
     p.add_argument("--update", action="store_true", help="更新到最新版（重跑安装脚本，含系统库，需 sudo）")
     p.add_argument("--self-update", action="store_true", help="轻量自更新：git+pip+重启，无需 sudo（托盘 Update now 用）")
+    p.add_argument("--doctor", action="store_true", help="扫描并自检登录态/凭证（不泄露密钥；安装脚本与排错用）")
+    p.add_argument("--lang", choices=["zh", "en"], help="输出语言（默认按系统/配置自动判断）")
     args = p.parse_args()
 
+    if args.doctor:
+        sys.exit(cmd_doctor(args.lang or load_lang()))
     if args.once:
         sys.exit(cmd_once())
     if args.check:
