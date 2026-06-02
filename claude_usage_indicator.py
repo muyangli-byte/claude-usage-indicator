@@ -23,12 +23,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -74,6 +75,56 @@ def _read_config() -> dict:
         return json.loads(CONFIG_PATH.read_text())
     except Exception:
         return {}
+
+
+def _write_config(updates: dict) -> None:
+    try:
+        CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        cfg = _read_config()
+        cfg.update(updates)
+        CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+    except Exception as e:
+        print(f"[config] write failed: {e}", flush=True)
+
+
+def _default_lang() -> str:
+    loc = (os.environ.get("LC_ALL") or os.environ.get("LC_MESSAGES")
+           or os.environ.get("LANG") or "").lower()
+    return "zh" if loc.startswith("zh") else "en"
+
+
+def load_lang() -> str:
+    lang = _read_config().get("lang")
+    return lang if lang in ("zh", "en") else _default_lang()
+
+
+# 通知文案中英双语（菜单保持英文原样，只有桌面通知按所选语言切换）
+NOTIFY_MSG = {
+    "auth": {
+        "zh": ("⚠ Claude 用量：登录已过期", "去 Chrome 打开 claude.ai 重新登录即可恢复。"),
+        "en": ("⚠ Claude usage: login expired", "Re-login to claude.ai in Chrome to restore."),
+    },
+    "cloudflare": {
+        "zh": ("⚠ Claude 用量：被 Cloudflare 拦截", "TLS 伪装可能失效，脚本或许需要更新；详见 diagnostics 目录。"),
+        "en": ("⚠ Claude usage: blocked by Cloudflare", "TLS impersonation may have broken; the tool might need an update. See the diagnostics dir."),
+    },
+    "schema": {
+        "zh": ("⚠ Claude 用量：接口结构变了", "用量接口字段变化，脚本需要更新；原始响应已存到 diagnostics 目录。"),
+        "en": ("⚠ Claude usage: API schema changed", "The usage API changed; the tool needs an update. Raw response saved to the diagnostics dir."),
+    },
+    "cookie": {
+        "zh": ("⚠ Claude 用量：读取 Chrome cookie 失败", "请确认已登录 claude.ai；keyring 可能未解锁。"),
+        "en": ("⚠ Claude usage: cannot read Chrome cookies", "Make sure you're logged into claude.ai; the keyring may be locked."),
+    },
+    "network": {
+        "zh": ("⚠ Claude 用量：网络错误", "稍后会自动重试。"),
+        "en": ("⚠ Claude usage: network error", "Will retry automatically."),
+    },
+    "http": {
+        "zh": ("⚠ Claude 用量：请求失败", "稍后会自动重试。"),
+        "en": ("⚠ Claude usage: request failed", "Will retry automatically."),
+    },
+}
 
 
 def load_credentials() -> tuple[Optional[str], Optional[str]]:
@@ -237,15 +288,15 @@ def _pct(u) -> str:
     return "--" if u is None else f"{int(round(u))}%"
 
 
-def _fmt_countdown(dt: Optional[datetime]) -> str:
-    """到重置还剩多久 -> '4h50m' / '50m'（每次调用按当前时间算）。"""
+def _fmt_resettime(dt: Optional[datetime]) -> str:
+    """接口返回的重置绝对时刻（转本地时区，只显示时钟）-> '5:10pm'。
+    这是接口原始数据 resets_at，只做时区换算，不做任何「还剩多久」的倒计时推算。"""
     if dt is None:
         return "--"
-    secs = (dt - datetime.now(timezone.utc)).total_seconds()
-    if secs <= 0:
-        return "0m"
-    h, m = int(secs // 3600), int((secs % 3600) // 60)
-    return f"{h}h{m}m" if h else f"{m}m"
+    loc = dt.astimezone()
+    h12 = loc.strftime("%I").lstrip("0") or "12"
+    ap = loc.strftime("%p").lower()
+    return f"{h12}:{loc.minute:02d}{ap}"
 
 
 def _fmt_resetday(dt: Optional[datetime]) -> str:
@@ -288,7 +339,7 @@ def remote_is_newer(remote: Optional[str]) -> bool:
 # ===================== 数据模型 =====================
 @dataclass
 class UsageData:
-    # 存原始值；显示字符串在渲染层即时计算（倒计时才能每秒平滑走动）
+    # 存接口原始值；显示字符串在渲染层格式化（重置时刻是绝对时间，直接来自接口 resets_at，不做倒计时推算）
     five_hour_util: Optional[float] = None
     five_hour_reset: Optional[datetime] = None
     seven_day_util: Optional[float] = None
@@ -315,7 +366,7 @@ class UsageData:
 
     @property
     def current_session_reset(self) -> str:
-        return _fmt_countdown(self.five_hour_reset)
+        return _fmt_resettime(self.five_hour_reset)
 
     @property
     def all_models_used(self) -> str:
@@ -514,6 +565,7 @@ def build_app():
 
     class ClaudeIndicatorApp:
         def __init__(self) -> None:
+            self.lang = load_lang()
             self.indicator = AppIndicator3.Indicator.new(
                 APP_NAME, "network-transmit-receive",
                 AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
@@ -535,6 +587,7 @@ def build_app():
             self._action("Check for updates", self.on_check_update)
             self.action_update = self._action("Update now", self.on_update_now)
             self._action("Open usage page", self.on_open_page)
+            self.action_lang = self._action(self._lang_label(), self.on_toggle_lang)
             self._action(f"Quit  (v{__version__})", self.on_quit)
             self.menu.show_all()
             self.indicator.set_menu(self.menu)
@@ -559,6 +612,12 @@ def build_app():
             item.connect("activate", cb)
             self.menu.append(item)
             return item
+
+        def L(self, zh: str, en: str) -> str:
+            return zh if self.lang == "zh" else en
+
+        def _lang_label(self) -> str:
+            return f"Notification language: {'中文' if self.lang == 'zh' else 'English'}"
 
         def _tick(self) -> bool:
             self.refresh_ui()
@@ -606,7 +665,8 @@ def build_app():
                     n = Notify.Notification.new(title, body, "dialog-warning")
                     n.set_urgency(Notify.Urgency.NORMAL)
                     try:
-                        n.add_action("open", "打开用量页", lambda *a: self.on_open_page(None), None)
+                        n.add_action("open", self.L("打开用量页", "Open usage page"),
+                                     lambda *a: self.on_open_page(None), None)
                     except Exception:
                         pass
                     self._notification = n
@@ -620,22 +680,20 @@ def build_app():
                 print(f"[notify] notify-send failed: {exc}", flush=True)
 
         def _notify_status(self, d: UsageData) -> None:
-            mapping = {
-                "auth": ("⚠ Claude 用量：登录已过期", "去 Chrome 打开 claude.ai 重新登录即可恢复。"),
-                "cloudflare": ("⚠ Claude 用量：被 Cloudflare 拦截", "TLS 伪装可能失效，脚本或许需要更新。详见 diagnostics 目录。"),
-                "schema": ("⚠ Claude 用量：接口结构变了", "用量接口字段变化，脚本需要更新。原始响应已存到 diagnostics 目录。"),
-                "cookie": ("⚠ Claude 用量：读取 Chrome cookie 失败", "请确认已登录 claude.ai；keyring 可能未解锁。"),
-                "network": ("⚠ Claude 用量：网络错误", "稍后会自动重试。"),
-                "http": ("⚠ Claude 用量：请求失败", "稍后会自动重试。"),
-            }
-            title, body = mapping.get(d.status, ("⚠ Claude 用量异常", d.error_msg))
+            pair = NOTIFY_MSG.get(d.status)
+            if pair:
+                title, body = pair[self.lang]
+            else:
+                title, body = self.L("⚠ Claude 用量异常", "⚠ Claude usage error"), d.error_msg
             if d.error_msg:
-                body = f"{body}\n（{d.error_msg}）"
+                body = f"{body}\n({d.error_msg})"
             self._notify(title, body)
 
         def _notify_update(self, ver: str) -> None:
-            self._notify("↑ Claude 用量指示器有新版本",
-                         f"v{__version__} → v{ver}\n在托盘菜单点「Update now」即可一键更新")
+            self._notify(
+                self.L("↑ Claude 用量指示器有新版本", "↑ New version available"),
+                self.L(f"v{__version__} → v{ver}\n托盘菜单点 Update now 一键更新",
+                       f"v{__version__} → v{ver}\nClick Update now in the tray menu"))
 
         def on_refresh_now(self, _w) -> None:
             if self.poller:
@@ -648,11 +706,14 @@ def build_app():
                 STORE.set_update(remote if newer else None)
                 if newer:
                     self._notified_update = remote  # 抑制 refresh_ui 的重复通知
-                    GLib.idle_add(lambda: self._notify(
-                        "↑ 发现新版本", f"v{__version__} → v{remote}\n菜单点「Update now」一键更新") or False)
+                    title = self.L("↑ 发现新版本", "↑ Update available")
+                    body = self.L(f"v{__version__} → v{remote}\n菜单点 Update now 一键更新",
+                                  f"v{__version__} → v{remote}\nClick Update now in the menu")
                 else:
-                    GLib.idle_add(lambda: self._notify(
-                        "Claude 用量指示器", f"已是最新版 v{__version__}（无需更新）") or False)
+                    title = self.L("Claude 用量指示器", "Claude usage indicator")
+                    body = self.L(f"已是最新版 v{__version__}（无需更新）",
+                                  f"Already up to date (v{__version__})")
+                GLib.idle_add(lambda: self._notify(title, body) or False)
                 GLib.idle_add(self.refresh_ui)
             threading.Thread(target=worker, daemon=True).start()
 
@@ -661,7 +722,8 @@ def build_app():
             here = Path(__file__).resolve().parent
             py = str(here / "venv" / "bin" / "python")
             script = str(here / "claude_usage_indicator.py")
-            self._notify("Claude 用量指示器", "正在后台更新并重启…")
+            self._notify(self.L("Claude 用量指示器", "Claude usage indicator"),
+                         self.L("正在后台更新并重启…", "Updating in the background and restarting…"))
             try:
                 subprocess.Popen(
                     ["systemd-run", "--user", "--collect", py, script, "--self-update"],
@@ -675,6 +737,13 @@ def build_app():
                 subprocess.Popen(["xdg-open", USAGE_PAGE_URL])
             except Exception as exc:
                 print(f"[open] xdg-open failed: {exc}", flush=True)
+
+        def on_toggle_lang(self, _w) -> None:
+            self.lang = "en" if self.lang == "zh" else "zh"
+            _write_config({"lang": self.lang})
+            self.action_lang.set_label(self._lang_label())
+            self._notify(self.L("通知语言已切换", "Notification language switched"),
+                         self.L("通知将以中文显示。", "Notifications will be shown in English."))
 
         def on_quit(self, _w) -> None:
             Gtk.main_quit()
