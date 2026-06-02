@@ -529,16 +529,16 @@ def build_app():
             self.item_opus = self._info("Opus (weekly): --")
             self.item_status = self._info("Status: --")
             self.item_updated = self._info("Updated: --")
-            self.item_update = self._info("")
 
             self.menu.append(Gtk.SeparatorMenuItem())
             self._action("Refresh now", self.on_refresh_now)
             self._action("Check for updates", self.on_check_update)
-            self._action("Update now", self.on_update_now)
+            self.action_update = self._action("Update now", self.on_update_now)
             self._action("Open usage page", self.on_open_page)
             self._action(f"Quit  (v{__version__})", self.on_quit)
             self.menu.show_all()
             self.indicator.set_menu(self.menu)
+            self.action_update.set_visible(False)  # 只有 check 到新版才显示这一行
 
             self._last_status = "init"
             self._last_notify_t = 0.0
@@ -558,6 +558,7 @@ def build_app():
             item = Gtk.MenuItem(label=label)
             item.connect("activate", cb)
             self.menu.append(item)
+            return item
 
         def _tick(self) -> bool:
             self.refresh_ui()
@@ -581,10 +582,10 @@ def build_app():
             self.item_updated.set_label(f"Updated: {d.received_clock_text()} ({d.refreshed_ago_text()})")
 
             if d.update_available:
-                self.item_update.set_label(f"↑ 有新版 v{d.update_available}（点 Update now 一键更新）")
-                self.item_update.set_visible(True)
+                self.action_update.set_label(f"⬆ Update now → v{d.update_available}")
+                self.action_update.set_visible(True)
             else:
-                self.item_update.set_visible(False)
+                self.action_update.set_visible(False)
 
             # 心跳/健康告警：进入异常立刻提醒；持续异常每 30 分钟再提醒一次
             if d.status not in ("ok", "init"):
@@ -643,10 +644,16 @@ def build_app():
         def on_check_update(self, _w) -> None:
             def worker():
                 remote = fetch_remote_version()
-                STORE.set_update(remote if remote_is_newer(remote) else None)
+                newer = remote_is_newer(remote)
+                STORE.set_update(remote if newer else None)
+                if newer:
+                    self._notified_update = remote  # 抑制 refresh_ui 的重复通知
+                    GLib.idle_add(lambda: self._notify(
+                        "↑ 发现新版本", f"v{__version__} → v{remote}\n菜单点「Update now」一键更新") or False)
+                else:
+                    GLib.idle_add(lambda: self._notify(
+                        "Claude 用量指示器", f"已是最新版 v{__version__}（无需更新）") or False)
                 GLib.idle_add(self.refresh_ui)
-                if not remote_is_newer(remote):
-                    GLib.idle_add(lambda: self._notify("Claude 用量指示器", f"已是最新版 v{__version__}") or False)
             threading.Thread(target=worker, daemon=True).start()
 
         def on_update_now(self, _w) -> None:

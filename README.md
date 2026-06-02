@@ -121,7 +121,7 @@ claude-usage-indicator --check         # 只检查有没有新版
 | Status | 当前状态（ok / 登录过期 / 接口变了 …） |
 | Refresh now | 立即拉取一次 |
 | Check for updates | 立即检查新版本 |
-| Update now | **一键更新**到最新并自动重启（无需 sudo）|
+| Update now | **仅在 Check for updates 发现新版后才出现**；点它一键更新并自动重启（无需 sudo）|
 | Open usage page | 打开 claude.ai 用量页 |
 
 ## 命令行
