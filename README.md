@@ -99,12 +99,17 @@ curl -fsSL https://raw.githubusercontent.com/muyangli-byte/claude-usage-indicato
 
 ## 更新
 
+**最省事：托盘菜单点「Update now」一键更新**（后台拉取最新代码 + 依赖并自动重启，无需终端、无需 sudo）。
+
+或在终端：
+
 ```bash
-claude-usage-indicator --update      # 拉取最新版并重启
-claude-usage-indicator --check       # 只检查有没有新版
+claude-usage-indicator --self-update   # 轻量更新：git+pip+重启，无需 sudo（同「Update now」）
+claude-usage-indicator --update        # 重跑安装脚本，连系统库一起更新（需 sudo）
+claude-usage-indicator --check         # 只检查有没有新版
 ```
 
-工具每天自动比对仓库版本，有新版会在托盘和桌面通知里提示（**只通知，不自动更新**）。
+工具每天自动比对仓库版本，有新版会在托盘和桌面通知里提示，点「Update now」即可。一般用 `--self-update`/「Update now」即可；只有当某次更新需要新的系统库时才用 `--update`。
 
 ---
 
@@ -116,6 +121,7 @@ claude-usage-indicator --check       # 只检查有没有新版
 | Status | 当前状态（ok / 登录过期 / 接口变了 …） |
 | Refresh now | 立即拉取一次 |
 | Check for updates | 立即检查新版本 |
+| Update now | **一键更新**到最新并自动重启（无需 sudo）|
 | Open usage page | 打开 claude.ai 用量页 |
 
 ## 命令行

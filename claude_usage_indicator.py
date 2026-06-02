@@ -534,6 +534,7 @@ def build_app():
             self.menu.append(Gtk.SeparatorMenuItem())
             self._action("Refresh now", self.on_refresh_now)
             self._action("Check for updates", self.on_check_update)
+            self._action("Update now", self.on_update_now)
             self._action("Open usage page", self.on_open_page)
             self._action(f"Quit  (v{__version__})", self.on_quit)
             self.menu.show_all()
@@ -580,7 +581,7 @@ def build_app():
             self.item_updated.set_label(f"Updated: {d.received_clock_text()} ({d.refreshed_ago_text()})")
 
             if d.update_available:
-                self.item_update.set_label(f"↑ 有新版 v{d.update_available}：运行 {APP_NAME} --update")
+                self.item_update.set_label(f"↑ 有新版 v{d.update_available}（点 Update now 一键更新）")
                 self.item_update.set_visible(True)
             else:
                 self.item_update.set_visible(False)
@@ -633,7 +634,7 @@ def build_app():
 
         def _notify_update(self, ver: str) -> None:
             self._notify("↑ Claude 用量指示器有新版本",
-                         f"v{__version__} → v{ver}\n在终端运行：{APP_NAME} --update")
+                         f"v{__version__} → v{ver}\n在托盘菜单点「Update now」即可一键更新")
 
         def on_refresh_now(self, _w) -> None:
             if self.poller:
@@ -647,6 +648,20 @@ def build_app():
                 if not remote_is_newer(remote):
                     GLib.idle_add(lambda: self._notify("Claude 用量指示器", f"已是最新版 v{__version__}") or False)
             threading.Thread(target=worker, daemon=True).start()
+
+        def on_update_now(self, _w) -> None:
+            # 在独立的 systemd 瞬时单元里跑自更新，这样它重启本服务时不会把更新进程一起杀掉
+            here = Path(__file__).resolve().parent
+            py = str(here / "venv" / "bin" / "python")
+            script = str(here / "claude_usage_indicator.py")
+            self._notify("Claude 用量指示器", "正在后台更新并重启…")
+            try:
+                subprocess.Popen(
+                    ["systemd-run", "--user", "--collect", py, script, "--self-update"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except FileNotFoundError:
+                subprocess.Popen(f"setsid {py} {script} --self-update >/dev/null 2>&1 &", shell=True)
 
         def on_open_page(self, _w) -> None:
             try:
@@ -702,6 +717,27 @@ def cmd_update() -> int:
     return subprocess.call(f"curl -fsSL {url} | bash", shell=True)
 
 
+def cmd_self_update() -> int:
+    """轻量自更新（无需 sudo）：在自身安装目录里 git 拉取最新 + pip 装依赖 + 重启服务。
+    供托盘「Update now」用；只更新代码/依赖，不动系统库。若系统库有变动请改用 --update。"""
+    here = Path(__file__).resolve().parent
+    if not (here / ".git").exists():
+        print(f"{here} 不是 git 安装目录，无法自更新；请改用 --update（重跑安装脚本）")
+        return 1
+    try:
+        subprocess.run(["git", "-C", str(here), "fetch", "--depth", "1", "origin", "main"], check=True)
+        subprocess.run(["git", "-C", str(here), "reset", "--hard", "origin/main"], check=True)
+        pip = here / "venv" / "bin" / "pip"
+        if pip.exists():
+            subprocess.run([str(pip), "install", "-q", "-r", str(here / "requirements.txt")], check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"自更新失败: {e}")
+        return 1
+    subprocess.run(["systemctl", "--user", "restart", f"{APP_NAME}.service"])
+    print(f"已更新并重启（v{_read_version()}）")
+    return 0
+
+
 def cmd_check() -> int:
     remote = fetch_remote_version()
     if remote_is_newer(remote):
@@ -716,7 +752,8 @@ def main() -> None:
     p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     p.add_argument("--once", action="store_true", help="拉取一次并打印（调试）")
     p.add_argument("--check", action="store_true", help="检查是否有新版本")
-    p.add_argument("--update", action="store_true", help="更新到最新版（重跑安装脚本）")
+    p.add_argument("--update", action="store_true", help="更新到最新版（重跑安装脚本，含系统库，需 sudo）")
+    p.add_argument("--self-update", action="store_true", help="轻量自更新：git+pip+重启，无需 sudo（托盘 Update now 用）")
     args = p.parse_args()
 
     if args.once:
@@ -725,6 +762,8 @@ def main() -> None:
         sys.exit(cmd_check())
     if args.update:
         sys.exit(cmd_update())
+    if args.self_update:
+        sys.exit(cmd_self_update())
     run_gui()
 
 
