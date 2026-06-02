@@ -147,10 +147,20 @@ NOTIFY_ICONS = {"warn": "dialog-warning", "update": "software-update-available",
 
 
 def load_credentials() -> tuple[Optional[str], Optional[str]]:
-    """返回 (session_key, org_id)。优先浏览器 cookie，其次配置文件。"""
+    """返回 (session_key, org_id)。
+
+    config.json 里显式配置的凭证**优先**：这样当浏览器 cookie 读不出/解不开时
+    （如 KDE 的 KWallet 没设好、keyring 锁着，导致 sessionKey 解密成乱码），可以手动在
+    config.json 填 session_key/org_id 兜底；且两者都配齐时完全不碰浏览器/keyring。
+    缺的部分再从浏览器 cookie 补。"""
+    cfg = _read_config()
+    sk = cfg.get("session_key") or None
+    org = cfg.get("org_id") or None
+    if sk and org:
+        return sk, org  # 配置已齐全，直接用，不触发浏览器/keyring
+
     import browser_cookie3 as bc3
 
-    sk = org = None
     errors = tried = 0
     for name in BROWSERS:
         fn = getattr(bc3, name, None)
@@ -162,14 +172,10 @@ def load_credentials() -> tuple[Optional[str], Optional[str]]:
         except Exception:
             errors += 1
             continue
-        if cookies.get("sessionKey"):
-            sk = cookies["sessionKey"]
-            org = cookies.get("lastActiveOrg") or org
+        sk = sk or cookies.get("sessionKey")
+        org = org or cookies.get("lastActiveOrg")
+        if sk and org:
             break
-
-    cfg = _read_config()
-    sk = sk or cfg.get("session_key")
-    org = org or cfg.get("org_id")
 
     if sk is None and tried > 0 and errors == tried and not cfg:
         raise CookieError("cannot read browser cookies (keyring locked?)")

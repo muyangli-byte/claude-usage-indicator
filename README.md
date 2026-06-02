@@ -154,6 +154,17 @@ claude-usage-indicator --version
 
 异常响应会保存到 `~/.local/share/claude-usage-indicator/diagnostics/`（仅保留最近 20 份），方便定位或提交 issue。
 
+**已登录却一直 `login expired`**（尤其 KDE，弹出 KWallet 让你设密码）：浏览器 cookie 的加密 key 存在系统钥匙环里（GNOME keyring / KDE KWallet），工具解不开就拿不到有效 sessionKey。两个办法：
+
+- **最稳——手动填凭证绕过钥匙环**：浏览器打开已登录的 claude.ai → F12 → Application/存储 → Cookies → `https://claude.ai`，复制 `sessionKey` 和 `lastActiveOrg` 两个值，写进 `~/.config/claude-usage-indicator/config.json`：
+
+  ```json
+  {"session_key": "sk-ant-sid02-…", "org_id": "<lastActiveOrg 的值>"}
+  ```
+
+  然后 `systemctl --user restart claude-usage-indicator.service`。config.json 里填了就优先用、完全不碰钥匙环。（注意 sessionKey 会过期，过期后重新复制一次。）
+- 或者**设置并解锁你的钥匙环**（KDE 用户：创建并解锁 KWallet 钱包），让工具能自动解密浏览器 cookie，免去手动维护。
+
 查看日志：
 
 ```bash
@@ -328,6 +339,17 @@ When the top bar shows `⚠`, check the **Status** line in the tray or the deskt
 | network / HTTP error | transient | Retries automatically |
 
 Failed responses are saved to `~/.local/share/claude-usage-indicator/diagnostics/` (last 20 only) to help diagnose or file an issue.
+
+**Persistent `login expired` even though you're logged in** (especially on KDE, where KWallet pops up asking you to set a password): the browser's cookie‑encryption key lives in the system keyring (GNOME keyring / KDE KWallet); if the tool can't read it, it can't decrypt a valid sessionKey. Two options:
+
+- **Most reliable — set credentials manually, bypassing the keyring**: open the logged‑in claude.ai → F12 → Application/Storage → Cookies → `https://claude.ai`, copy the `sessionKey` and `lastActiveOrg` values into `~/.config/claude-usage-indicator/config.json`:
+
+  ```json
+  {"session_key": "sk-ant-sid02-…", "org_id": "<lastActiveOrg value>"}
+  ```
+
+  then `systemctl --user restart claude-usage-indicator.service`. When config.json has them, they take precedence and the keyring/browser is never touched. (Note: the sessionKey expires; re-copy it when it does.)
+- Or **set up and unlock your keyring** (KDE: create and unlock the KWallet wallet) so the tool can decrypt browser cookies automatically.
 
 View logs:
 
