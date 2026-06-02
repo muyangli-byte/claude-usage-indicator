@@ -113,33 +113,37 @@ def _write_update_result(text: str) -> None:
         pass
 
 
-# 通知文案中英双语（菜单保持英文原样，只有桌面通知按所选语言切换）
+# 通知文案中英双语。标题简洁、不重复 app 名、不带 emoji（severity 交给图标表达；
+# 系统会单独显示应用名 "Claude Usage Indicator"）。菜单仍全英文，只有通知按语言切换。
 NOTIFY_MSG = {
     "auth": {
-        "zh": ("⚠ Claude 用量：登录已过期", "去 Chrome 打开 claude.ai 重新登录即可恢复。"),
-        "en": ("⚠ Claude usage: login expired", "Re-login to claude.ai in Chrome to restore."),
+        "zh": ("登录已过期", "去 Chrome 打开 claude.ai 重新登录即可恢复。"),
+        "en": ("Login expired", "Re-login to claude.ai in Chrome to restore."),
     },
     "cloudflare": {
-        "zh": ("⚠ Claude 用量：被 Cloudflare 拦截", "TLS 伪装可能失效，脚本或许需要更新；详见 diagnostics 目录。"),
-        "en": ("⚠ Claude usage: blocked by Cloudflare", "TLS impersonation may have broken; the tool might need an update. See the diagnostics dir."),
+        "zh": ("被 Cloudflare 拦截", "TLS 伪装可能失效，脚本或许需要更新；详见 diagnostics 目录。"),
+        "en": ("Blocked by Cloudflare", "TLS impersonation may have broken; the tool might need an update. See the diagnostics dir."),
     },
     "schema": {
-        "zh": ("⚠ Claude 用量：接口结构变了", "用量接口字段变化，脚本需要更新；原始响应已存到 diagnostics 目录。"),
-        "en": ("⚠ Claude usage: API schema changed", "The usage API changed; the tool needs an update. Raw response saved to the diagnostics dir."),
+        "zh": ("接口结构变了", "用量接口字段变化，脚本需要更新；原始响应已存到 diagnostics 目录。"),
+        "en": ("API schema changed", "The usage API changed; the tool needs an update. Raw response saved to the diagnostics dir."),
     },
     "cookie": {
-        "zh": ("⚠ Claude 用量：读取 Chrome cookie 失败", "请确认已登录 claude.ai；keyring 可能未解锁。"),
-        "en": ("⚠ Claude usage: cannot read Chrome cookies", "Make sure you're logged into claude.ai; the keyring may be locked."),
+        "zh": ("读不到浏览器 cookie", "请确认已登录 claude.ai；keyring 可能未解锁。"),
+        "en": ("Can't read browser cookies", "Make sure you're logged into claude.ai; the keyring may be locked."),
     },
     "network": {
-        "zh": ("⚠ Claude 用量：网络错误", "稍后会自动重试。"),
-        "en": ("⚠ Claude usage: network error", "Will retry automatically."),
+        "zh": ("网络错误", "稍后会自动重试。"),
+        "en": ("Network error", "Will retry automatically."),
     },
     "http": {
-        "zh": ("⚠ Claude 用量：请求失败", "稍后会自动重试。"),
-        "en": ("⚠ Claude usage: request failed", "Will retry automatically."),
+        "zh": ("请求失败", "稍后会自动重试。"),
+        "en": ("Request failed", "Will retry automatically."),
     },
 }
+
+# 通知图标按语义区分（全用 freedesktop 通用图标，主题缺失也会优雅回退）
+NOTIFY_ICONS = {"warn": "dialog-warning", "update": "software-update-available", "info": "dialog-information"}
 
 
 def load_credentials() -> tuple[Optional[str], Optional[str]]:
@@ -698,10 +702,11 @@ def build_app():
                 self._notified_update = d.update_available
             return False
 
-        def _notify(self, title: str, body: str) -> None:
+        def _notify(self, title: str, body: str, kind: str = "info") -> None:
+            icon = NOTIFY_ICONS.get(kind, "dialog-information")
             if have_notify:
                 try:
-                    n = Notify.Notification.new(title, body, "dialog-warning")
+                    n = Notify.Notification.new(title, body, icon)
                     n.set_urgency(Notify.Urgency.NORMAL)
                     try:
                         n.add_action("open", self.L("打开用量页", "Open usage page"),
@@ -714,7 +719,9 @@ def build_app():
                 except Exception as exc:
                     print(f"[notify] libnotify failed: {exc}", flush=True)
             try:
-                subprocess.Popen(["notify-send", "-u", "normal", title, body])
+                # 无 libnotify 时也带上应用名与语义图标
+                subprocess.Popen(["notify-send", "-a", "Claude Usage Indicator",
+                                  "-i", icon, "-u", "normal", title, body])
             except Exception as exc:
                 print(f"[notify] notify-send failed: {exc}", flush=True)
 
@@ -723,16 +730,17 @@ def build_app():
             if pair:
                 title, body = pair[self.lang]
             else:
-                title, body = self.L("⚠ Claude 用量异常", "⚠ Claude usage error"), d.error_msg
+                title, body = self.L("用量异常", "Usage error"), d.error_msg
             if d.error_msg:
                 body = f"{body}\n({d.error_msg})"
-            self._notify(title, body)
+            self._notify(title, body, kind="warn")
 
         def _notify_update(self, ver: str) -> None:
             self._notify(
-                self.L("↑ Claude 用量指示器有新版本", "↑ New version available"),
+                self.L("发现新版本", "Update available"),
                 self.L(f"v{__version__} → v{ver}\n托盘菜单点 Update now 一键更新",
-                       f"v{__version__} → v{ver}\nClick Update now in the tray menu"))
+                       f"v{__version__} → v{ver}\nClick Update now in the tray menu"),
+                kind="update")
 
         def on_refresh_now(self, _w) -> None:
             if self.poller:
@@ -743,7 +751,7 @@ def build_app():
                 remote = fetch_remote_version()
                 newer = remote_is_newer(remote)
                 if newer:
-                    title = self.L("↑ 发现新版本", "↑ Update available")
+                    title = self.L("发现新版本", "Update available")
                     body = self.L(f"v{__version__} → v{remote}\n菜单点 Update now 一键更新",
                                   f"v{__version__} → v{remote}\nClick Update now in the menu")
 
@@ -752,18 +760,17 @@ def build_app():
                         # 这样 _tick/refresh_ui 永远不会在两者之间看到"有新版但未通知"的中间态
                         self._notified_update = remote
                         STORE.set_update(remote)
-                        self._notify(title, body)
+                        self._notify(title, body, kind="update")
                         self.refresh_ui()
                         return False
                     GLib.idle_add(announce)
                 else:
-                    title = self.L("Claude 用量指示器", "Claude usage indicator")
-                    body = self.L(f"已是最新版 v{__version__}（无需更新）",
-                                  f"Already up to date (v{__version__})")
+                    title = self.L("已是最新", "Already up to date")
+                    body = self.L(f"当前 v{__version__}", f"You're on v{__version__}")
 
                     def announce_none():
                         STORE.set_update(None)
-                        self._notify(title, body)
+                        self._notify(title, body, kind="info")
                         self.refresh_ui()
                         return False
                     GLib.idle_add(announce_none)
@@ -774,8 +781,9 @@ def build_app():
             here = Path(__file__).resolve().parent
             py = str(here / "venv" / "bin" / "python")
             script = str(here / "claude_usage_indicator.py")
-            self._notify(self.L("Claude 用量指示器", "Claude usage indicator"),
-                         self.L("正在后台更新并重启…", "Updating in the background and restarting…"))
+            self._notify(self.L("正在更新…", "Updating…"),
+                         self.L("正在后台更新并重启。", "Updating in the background and restarting."),
+                         kind="info")
             try:
                 subprocess.Popen(
                     ["systemd-run", "--user", "--collect", py, script, "--self-update"],
@@ -799,12 +807,12 @@ def build_app():
                 return False
             kind, _, info = content.partition("|")
             if kind == "ok":
-                self._notify(self.L("✓ 已更新", "✓ Updated"),
-                             self.L(f"已更新到 v{info} 并重启。", f"Updated to v{info} and restarted."))
+                self._notify(self.L(f"已更新到 v{info}", f"Updated to v{info}"),
+                             self.L("已重启生效。", "Restarted and running."), kind="info")
             elif kind == "fail":
-                self._notify(self.L("⚠ 更新失败", "⚠ Update failed"),
+                self._notify(self.L("更新失败", "Update failed"),
                              self.L(f"{info}\n可在终端运行：{APP_NAME} --update",
-                                    f"{info}\nRun in a terminal: {APP_NAME} --update"))
+                                    f"{info}\nRun in a terminal: {APP_NAME} --update"), kind="warn")
             return False
 
         def on_open_page(self, _w) -> None:
@@ -817,8 +825,8 @@ def build_app():
             self.lang = "en" if self.lang == "zh" else "zh"
             _write_config({"lang": self.lang})
             self.action_lang.set_label(self._lang_label())
-            self._notify(self.L("通知语言已切换", "Notification language switched"),
-                         self.L("通知将以中文显示。", "Notifications will be shown in English."))
+            self._notify(self.L("通知语言：中文", "Notification language: English"),
+                         self.L("以后通知用中文显示。", "Notifications will now be in English."), kind="info")
 
         def on_quit(self, _w) -> None:
             Gtk.main_quit()
