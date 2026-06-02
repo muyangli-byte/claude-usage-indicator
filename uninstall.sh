@@ -41,6 +41,9 @@ if [ "$PURGE" = 1 ]; then
   echo
   echo "  系统库默认保留（可能被其他程序使用）。若确认要移除，可手动执行："
   echo "    sudo apt-get remove gir1.2-appindicator3-0.1 gir1.2-notify-0.7 libnotify-bin"
+elif [ -d "$CONFIG_DIR" ]; then
+  echo "  配置已保留：$CONFIG_DIR（语言等设置）。要一并删除请加 --purge："
+  echo "    curl -fsSL https://raw.githubusercontent.com/muyangli-byte/claude-usage-indicator/main/uninstall.sh | bash -s -- --purge"
 fi
 
 log "卸载完成。"

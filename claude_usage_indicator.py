@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -42,6 +43,7 @@ CONFIG_DIR = Path.home() / ".config" / APP_NAME
 DATA_DIR = Path.home() / ".local" / "share" / APP_NAME
 DIAG_DIR = DATA_DIR / "diagnostics"
 CONFIG_PATH = CONFIG_DIR / "config.json"
+UPDATE_RESULT = DATA_DIR / "update_result.txt"  # 自更新把 ok|ver / fail|reason 写这里，重启后 GUI 读取并通知
 
 
 def _read_version() -> str:
@@ -80,9 +82,14 @@ def _read_config() -> dict:
 def _write_config(updates: dict) -> None:
     try:
         CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(CONFIG_DIR, 0o700)
+        except Exception:
+            pass
         cfg = _read_config()
         cfg.update(updates)
         CONFIG_PATH.write_text(json.dumps(cfg, ensure_ascii=False, indent=2))
+        os.chmod(CONFIG_PATH, 0o600)
     except Exception as e:
         print(f"[config] write failed: {e}", flush=True)
 
@@ -96,6 +103,14 @@ def _default_lang() -> str:
 def load_lang() -> str:
     lang = _read_config().get("lang")
     return lang if lang in ("zh", "en") else _default_lang()
+
+
+def _write_update_result(text: str) -> None:
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        UPDATE_RESULT.write_text(text)
+    except Exception:
+        pass
 
 
 # 通知文案中英双语（菜单保持英文原样，只有桌面通知按所选语言切换）
@@ -153,7 +168,7 @@ def load_credentials() -> tuple[Optional[str], Optional[str]]:
     org = org or cfg.get("org_id")
 
     if sk is None and tried > 0 and errors == tried and not cfg:
-        raise CookieError("无法读取任何浏览器 cookie（keyring 可能未解锁）")
+        raise CookieError("cannot read browser cookies (keyring locked?)")
     return sk, org
 
 
@@ -175,14 +190,28 @@ def _is_challenge(text: str) -> bool:
     return "Just a moment" in t or "challenge-platform" in t or "cf-chl" in t
 
 
+def _redact(text: str) -> str:
+    """抹掉响应里可能出现的凭证（万一接口回显了 cookie/token），再落盘。"""
+    if not text:
+        return text
+    text = re.sub(r"sk-ant-[A-Za-z0-9_\-]+", "sk-ant-***REDACTED***", text)
+    text = re.sub(r"(sessionKey=)[^;\s\"']+", r"\1***REDACTED***", text)
+    return text
+
+
 def dump_diagnostics(kind: str, status_code, text: str) -> str:
-    """把异常响应写到 diagnostics/，便于事后定位/修脚本。只保留最近 20 份。"""
+    """把异常响应写到 diagnostics/，便于事后定位/修脚本。脱敏 + 0600，只保留最近 20 份。"""
     try:
         DIAG_DIR.mkdir(parents=True, exist_ok=True)
+        try:
+            os.chmod(DIAG_DIR, 0o700)
+        except Exception:
+            pass
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         path = DIAG_DIR / f"{ts}-{kind}.txt"
         header = f"kind={kind}\nstatus={status_code}\nversion={__version__}\ntime={ts}\n\n"
-        path.write_text(header + (text or "")[:20000])
+        path.write_text(_redact(header + (text or "")[:20000]))
+        os.chmod(path, 0o600)
         for old in sorted(DIAG_DIR.glob("*.txt"))[:-20]:
             try:
                 old.unlink()
@@ -261,9 +290,12 @@ def _parse_iso(s: Optional[str]) -> Optional[datetime]:
     if s.endswith("Z"):  # Python < 3.11 的 fromisoformat 不认 'Z'，统一成 +00:00
         s = s[:-1] + "+00:00"
     try:
-        return datetime.fromisoformat(s)
+        dt = datetime.fromisoformat(s)
     except Exception:
         return None
+    if dt.tzinfo is None:  # 接口万一不带时区，按 UTC 处理，避免 aware/naive 相减崩溃
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
 
 
 def json_to_raw(j: dict) -> dict:
@@ -354,10 +386,11 @@ class UsageData:
     consecutive_failures: int = 0
     update_available: Optional[str] = None
 
+    # 菜单/托盘统一英文（只有桌面通知按语言切换）
     STATUS_LABEL = {
-        "ok": "ok", "auth": "登录已过期", "cloudflare": "Cloudflare 拦截",
-        "schema": "接口结构变了", "http": "HTTP 错误", "network": "网络错误",
-        "cookie": "读 cookie 失败", "init": "启动中",
+        "ok": "ok", "auth": "login expired", "cloudflare": "Cloudflare blocked",
+        "schema": "API schema changed", "http": "HTTP error", "network": "network error",
+        "cookie": "cookie read failed", "init": "starting…",
     }
 
     # —— 即时计算的显示值 ——
@@ -395,8 +428,8 @@ class UsageData:
                 f"| All {self.all_models_used} {self.all_models_reset}")
         if self.received_at is None:
             return {
-                "auth": "⚠ Claude 登录已过期", "cloudflare": "⚠ Cloudflare 拦截",
-                "schema": "⚠ 接口结构变了", "cookie": "⚠ 读 cookie 失败",
+                "auth": "⚠ Claude: login expired", "cloudflare": "⚠ Cloudflare blocked",
+                "schema": "⚠ API schema changed", "cookie": "⚠ cookie read failed",
             }.get(self.status, "Claude usage waiting...")
         return ("⚠ " + base) if self.status != "ok" else base
 
@@ -480,9 +513,9 @@ class Poller(threading.Thread):
             except CookieError as e:
                 return "cookie", str(e), None
         if not sk:
-            return "auth", "找不到 sessionKey，请在 Chrome 登录 claude.ai", None
+            return "auth", "no sessionKey (log into claude.ai)", None
         if not org:
-            return "http", "找不到 org id", None
+            return "http", "no org id (set org_id in config.json)", None
         try:
             return "ok", "", fetch_usage(sk, org)
         except AuthError:
@@ -490,7 +523,7 @@ class Poller(threading.Thread):
                 sk, org = self._creds(force=True)
                 return "ok", "", fetch_usage(sk, org)
             except AuthError as e:
-                return "auth", f"登录已过期（{e}），请在 Chrome 重新登录 claude.ai", None
+                return "auth", str(e), None
             except CloudflareError as e:
                 return "cloudflare", str(e), None
             except SchemaError as e:
@@ -601,6 +634,7 @@ def build_app():
             self.poller: Optional[Poller] = None
 
             GLib.timeout_add_seconds(1, self._tick)  # 每秒重绘：倒计时平滑走动 + 健康判断
+            GLib.timeout_add_seconds(2, self._consume_update_breadcrumb)  # 自更新重启后通知"已更新到 vX"
 
         def _info(self, text: str):
             item = Gtk.MenuItem(label=text)
@@ -621,7 +655,11 @@ def build_app():
             return f"Notification language: {'中文' if self.lang == 'zh' else 'English'}"
 
         def _tick(self) -> bool:
-            self.refresh_ui()
+            # 兜底：refresh_ui 万一抛异常也不能让每秒 tick 被 GLib 移除（否则倒计时永久冻结）
+            try:
+                self.refresh_ui()
+            except Exception as e:
+                print(f"[ui] tick error: {e!r}", flush=True)
             return True
 
         def refresh_ui(self) -> bool:
@@ -636,7 +674,7 @@ def build_app():
             self.item_opus.set_visible(d.opus_used != "--")
             status_text = UsageData.STATUS_LABEL.get(d.status, d.status)
             if d.status != "ok" and d.consecutive_failures > 1:
-                status_text += f"（连续 {d.consecutive_failures} 次）"
+                status_text += f" (x{d.consecutive_failures})"
             extra = f" — {d.error_msg}" if d.error_msg else ""
             self.item_status.set_label(f"Status: {status_text}{extra}")
             self.item_updated.set_label(f"Updated: {d.received_clock_text()} ({d.refreshed_ago_text()})")
@@ -706,16 +744,21 @@ def build_app():
                 newer = remote_is_newer(remote)
                 STORE.set_update(remote if newer else None)
                 if newer:
-                    self._notified_update = remote  # 抑制 refresh_ui 的重复通知
                     title = self.L("↑ 发现新版本", "↑ Update available")
                     body = self.L(f"v{__version__} → v{remote}\n菜单点 Update now 一键更新",
                                   f"v{__version__} → v{remote}\nClick Update now in the menu")
+
+                    def announce():
+                        self._notified_update = remote  # 在主线程内设置，避免与 _tick 竞态重复弹
+                        self._notify(title, body)
+                        self.refresh_ui()
+                        return False
+                    GLib.idle_add(announce)
                 else:
                     title = self.L("Claude 用量指示器", "Claude usage indicator")
                     body = self.L(f"已是最新版 v{__version__}（无需更新）",
                                   f"Already up to date (v{__version__})")
-                GLib.idle_add(lambda: self._notify(title, body) or False)
-                GLib.idle_add(self.refresh_ui)
+                    GLib.idle_add(lambda: self._notify(title, body) or self.refresh_ui())
             threading.Thread(target=worker, daemon=True).start()
 
         def on_update_now(self, _w) -> None:
@@ -730,8 +773,31 @@ def build_app():
                     ["systemd-run", "--user", "--collect", py, script, "--self-update"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
-            except FileNotFoundError:
-                subprocess.Popen(f"setsid {py} {script} --self-update >/dev/null 2>&1 &", shell=True)
+            except FileNotFoundError:  # 没有 systemd-run：直接脱离会话起子进程（用 list 避免空格/特殊字符问题）
+                subprocess.Popen([py, script, "--self-update"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            # 更新成功会重启服务（新进程启动时读面包屑通知）；失败则本进程仍在，30s 后读面包屑提示
+            GLib.timeout_add_seconds(30, self._consume_update_breadcrumb)
+
+        def _consume_update_breadcrumb(self) -> bool:
+            # 读取自更新结果并通知一次（成功 ok|版本 / 失败 fail|原因），然后删除。一次性。
+            try:
+                if not UPDATE_RESULT.exists():
+                    return False
+                content = UPDATE_RESULT.read_text().strip()
+                UPDATE_RESULT.unlink()
+            except Exception:
+                return False
+            kind, _, info = content.partition("|")
+            if kind == "ok":
+                self._notify(self.L("✓ 已更新", "✓ Updated"),
+                             self.L(f"已更新到 v{info} 并重启。", f"Updated to v{info} and restarted."))
+            elif kind == "fail":
+                self._notify(self.L("⚠ 更新失败", "⚠ Update failed"),
+                             self.L(f"{info}\n可在终端运行：{APP_NAME} --update",
+                                    f"{info}\nRun in a terminal: {APP_NAME} --update"))
+            return False
 
         def on_open_page(self, _w) -> None:
             try:
@@ -796,22 +862,53 @@ def cmd_update() -> int:
 
 def cmd_self_update() -> int:
     """轻量自更新（无需 sudo）：在自身安装目录里 git 拉取最新 + pip 装依赖 + 重启服务。
-    供托盘「Update now」用；只更新代码/依赖，不动系统库。若系统库有变动请改用 --update。"""
+    供托盘「Update now」用；只更新代码/依赖，不动系统库。若系统库有变动请改用 --update。
+    把结果（ok|版本 / fail|原因）写到 UPDATE_RESULT，重启后的 GUI 会读取并弹通知。"""
+    import shutil
+
+    def fail(msg: str) -> int:
+        print(msg)
+        _write_update_result(f"fail|{msg}")
+        return 1
+
     here = Path(__file__).resolve().parent
     if not (here / ".git").exists():
-        print(f"{here} 不是 git 安装目录，无法自更新；请改用 --update（重跑安装脚本）")
-        return 1
+        return fail("not a git install dir; use --update instead")
     try:
+        # 保护开发副本：有未提交改动就别动，避免 reset 丢工作
+        dirty = subprocess.run(["git", "-C", str(here), "status", "--porcelain"],
+                               capture_output=True, text=True)
+        if dirty.stdout.strip():
+            return fail("local uncommitted changes; skipped (update manually or use --update)")
         subprocess.run(["git", "-C", str(here), "fetch", "--depth", "1", "origin", "main"], check=True)
-        subprocess.run(["git", "-C", str(here), "reset", "--hard", "origin/main"], check=True)
-        pip = here / "venv" / "bin" / "pip"
-        if pip.exists():
-            subprocess.run([str(pip), "install", "-q", "-r", str(here / "requirements.txt")], check=True)
-    except subprocess.CalledProcessError as e:
-        print(f"自更新失败: {e}")
-        return 1
-    subprocess.run(["systemctl", "--user", "restart", f"{APP_NAME}.service"])
-    print(f"已更新并重启（v{_read_version()}）")
+        # ff-only：开发副本若领先/分叉会安全失败，不会丢本地提交
+        subprocess.run(["git", "-C", str(here), "merge", "--ff-only", "origin/main"], check=True)
+    except subprocess.CalledProcessError:
+        return fail("git update failed (local branch ahead/diverged?)")
+
+    # 校验 venv（python 小版本升级后旧 venv 会失效），坏了就重建
+    venv = here / "venv"
+    py = venv / "bin" / "python"
+    if not (py.exists() and subprocess.run([str(py), "-c", "pass"]).returncode == 0):
+        try:
+            if venv.exists():
+                shutil.rmtree(venv)
+            subprocess.run(["python3", "-m", "venv", str(venv)], check=True)
+        except Exception:
+            return fail("venv rebuild failed; use --update")
+    pip = venv / "bin" / "pip"
+    try:
+        subprocess.run([str(pip), "install", "-q", "--upgrade", "pip", "wheel"], check=True)
+        subprocess.run([str(pip), "install", "-q", "-r", str(here / "requirements.txt")], check=True)
+    except subprocess.CalledProcessError:
+        return fail("pip install failed (new system libs needed? use --update)")
+
+    newver = _read_version()
+    _write_update_result(f"ok|{newver}")  # 先写成功，重启后新进程读到并通知
+    rc = subprocess.run(["systemctl", "--user", "restart", f"{APP_NAME}.service"]).returncode
+    if rc != 0:
+        return fail(f"service restart failed (rc={rc}); run: systemctl --user restart {APP_NAME}.service")
+    print(f"updated and restarted (v{newver})")
     return 0
 
 

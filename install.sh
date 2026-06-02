@@ -33,30 +33,49 @@ log "安装系统依赖（需要 sudo 授权）..."
 # apt-get update 容错：机器上常有无关的第三方源签名/网络出错，不该因此中断整个安装。
 export DEBIAN_FRONTEND=noninteractive
 sudo apt-get update -y </dev/null || log "apt-get update 报错（可能是无关的第三方源），跳过更新、继续安装所需包..."
+# AppIndicator GIR 包名因发行版而异：老的 gir1.2-appindicator3-0.1 vs 新的 Ayatana fork。
+# 两者都提供运行所需的 AppIndicator3-0.1 typelib；选当前 apt 能装到的那个。
+IND_PKG="gir1.2-appindicator3-0.1"
+if ! apt-cache show "$IND_PKG" >/dev/null 2>&1; then
+  IND_PKG="gir1.2-ayatanaappindicator3-0.1"
+fi
+log "AppIndicator 包: $IND_PKG"
 sudo -E apt-get install -y \
   build-essential python3 python3-venv python3-dev \
-  python3-gi gir1.2-gtk-3.0 gir1.2-appindicator3-0.1 gir1.2-notify-0.7 \
+  python3-gi gir1.2-gtk-3.0 "$IND_PKG" gir1.2-notify-0.7 \
   libgirepository1.0-dev libcairo2-dev pkg-config \
   libnotify-bin xdg-utils git curl </dev/null
 
 # ---- 2. 拉取代码 ----
-log "下载代码到 ${INSTALL_DIR} ..."
-mkdir -p "$INSTALL_DIR"
-if [ -d "$INSTALL_DIR/.git" ]; then
-  git -C "$INSTALL_DIR" fetch --depth 1 origin main
-  git -C "$INSTALL_DIR" reset --hard origin/main
+SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
+if [ "${LOCAL_INSTALL:-0}" = "1" ] && [ -f "$SELF_DIR/claude_usage_indicator.py" ]; then
+  # 显式部署"当前 clone 的这一份"（给想运行自己审阅过的代码的人）
+  log "LOCAL_INSTALL=1：部署当前 checkout（$SELF_DIR），不拉取 main ..."
+  rm -rf "$INSTALL_DIR"
+  mkdir -p "$(dirname "$INSTALL_DIR")"
+  cp -a "$SELF_DIR" "$INSTALL_DIR"
+  rm -rf "$INSTALL_DIR/venv"   # venv 在下一步重建
 else
-  if [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)" ]; then
-    backup="${INSTALL_DIR}.bak.$(date +%s)"
-    log "目录非空，备份旧内容到 ${backup}"
-    mv "$INSTALL_DIR" "$backup"
+  log "部署 GitHub 最新 main 到 ${INSTALL_DIR}（注意：装的是最新 main，不是你本地的 clone；要装本地用 LOCAL_INSTALL=1 ./install.sh）..."
+  mkdir -p "$INSTALL_DIR"
+  if [ -d "$INSTALL_DIR/.git" ]; then
+    git -C "$INSTALL_DIR" fetch --depth 1 origin main
+    git -C "$INSTALL_DIR" reset --hard origin/main
+  else
+    if [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)" ]; then
+      backup="${INSTALL_DIR}.bak.$(date +%s)"
+      log "目录非空，备份旧内容到 ${backup}"
+      mv "$INSTALL_DIR" "$backup"
+    fi
+    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
   fi
-  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
 fi
 
 # ---- 3. 虚拟环境 + Python 依赖 ----
 log "创建虚拟环境并安装 Python 依赖..."
-if [ ! -d "$INSTALL_DIR/venv" ]; then
+# venv 不存在、或 python 小版本升级后失效（symlink 悬空），都重建，让"重跑=更新"能自愈
+if [ ! -d "$INSTALL_DIR/venv" ] || ! "$INSTALL_DIR/venv/bin/python" -c 'pass' >/dev/null 2>&1; then
+  rm -rf "$INSTALL_DIR/venv"
   python3 -m venv "$INSTALL_DIR/venv"
 fi
 "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip wheel
@@ -93,12 +112,24 @@ echo
 echo "  ▸ 前置条件：在 Chrome 里登录 https://claude.ai（无需常开标签页）"
 echo "  ▸ 几秒内顶栏开始显示用量；若显示「⚠ 登录已过期」请到 Chrome 重新登录"
 echo "  ▸ 常用命令："
-echo "      $APP --check     # 检查更新"
-echo "      $APP --update    # 更新到最新版"
-echo "      $APP --once      # 拉取一次并打印（调试）"
+echo "      $APP --check        # 检查更新"
+echo "      $APP --self-update  # 更新（无需 sudo，同托盘 Update now）"
+echo "      $APP --update       # 更新（含系统库，需 sudo）"
+echo "      $APP --once         # 拉取一次并打印（调试）"
 echo "      systemctl --user status $APP.service"
 echo "      journalctl --user -u $APP.service -f"
+# 桌面环境提示：没有图形会话 / GNOME 缺扩展时，托盘图标不会出现（服务仍正常）
+if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
+  echo "  ⚠ 当前无图形会话（DISPLAY/WAYLAND 为空）：托盘图标只在桌面会话显示；可先用 '$APP --once' 验证数据。"
+elif printf '%s' "${XDG_CURRENT_DESKTOP:-}" | grep -qi gnome; then
+  echo "  ▸ GNOME 桌面：托盘图标需 AppIndicator 扩展（Ubuntu 通常已默认启用）。若看不到图标："
+  echo "      sudo apt-get install -y gnome-shell-extension-appindicator 然后注销重登"
+fi
 case ":$PATH:" in
   *":$BIN_DIR:"*) ;;
-  *) echo "  ⚠ ${BIN_DIR} 不在 PATH，请把它加入 PATH 后才能直接用 '$APP' 命令";;
+  *)
+    echo "  ⚠ ${BIN_DIR} 不在 PATH —— 顶栏托盘照常工作（systemd 用绝对路径启动），"
+    echo "    但要直接用 '$APP …' 命令，请把这行加进 ~/.bashrc 再重开终端："
+    echo "        export PATH=\"\$HOME/.local/bin:\$PATH\""
+    echo "    或本次用全路径：$BIN_DIR/$APP --check";;
 esac
