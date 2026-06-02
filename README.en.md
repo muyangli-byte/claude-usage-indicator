@@ -5,7 +5,7 @@
 Show your **claude.ai usage** live in the Linux top bar (system tray): current session (5‑hour window), weekly limits (All models / Sonnet / Opus), and each one's reset time.
 
 ```
-Cur 39% 5:10pm | All 5% Mon 7am
+Cur 39% 2h56m | All 5% Mon 7am
 ```
 
 - ✅ **No open web page, no Tampermonkey, no browser extension**
@@ -30,7 +30,7 @@ claude.ai has no push channel, so we must poll. The tool **adapts its frequency*
 - While you're **using Claude and the numbers change**, it polls fast (~every **5s**) ≈ near‑real‑time.
 - After a long period with **no change**, it **backs off** (10→20→…→90s cap) to spare the API.
 - On any change it snaps back to fast polling; the **Refresh now** menu item forces an immediate poll.
-- The reset time shown is the **raw reset timestamp from the API** (`resets_at`, only converted to your local timezone) — **no "time remaining" countdown is computed**.
+- The current‑session reset shows **time remaining** (e.g. `2h3m`), computed from the API's **real `resets_at`** minus the current time (counts down every second); the weekly reset shows the absolute reset time (`Mon 7am`).
 
 ### Health monitoring (heartbeat)
 

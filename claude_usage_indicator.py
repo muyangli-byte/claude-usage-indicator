@@ -29,7 +29,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -288,15 +288,16 @@ def _pct(u) -> str:
     return "--" if u is None else f"{int(round(u))}%"
 
 
-def _fmt_resettime(dt: Optional[datetime]) -> str:
-    """接口返回的重置绝对时刻（转本地时区，只显示时钟）-> '5:10pm'。
-    这是接口原始数据 resets_at，只做时区换算，不做任何「还剩多久」的倒计时推算。"""
+def _fmt_countdown(dt: Optional[datetime]) -> str:
+    """距接口给的重置时刻 resets_at 还剩多久 -> '2h3m' / '45m'。
+    resets_at 是接口真实数据；这里只是用「resets_at - 现在」算出剩余时间（每次渲染即时算，自然倒数）。"""
     if dt is None:
         return "--"
-    loc = dt.astimezone()
-    h12 = loc.strftime("%I").lstrip("0") or "12"
-    ap = loc.strftime("%p").lower()
-    return f"{h12}:{loc.minute:02d}{ap}"
+    secs = (dt - datetime.now(timezone.utc)).total_seconds()
+    if secs <= 0:
+        return "0m"
+    h, m = int(secs // 3600), int((secs % 3600) // 60)
+    return f"{h}h{m}m" if h else f"{m}m"
 
 
 def _fmt_resetday(dt: Optional[datetime]) -> str:
@@ -339,7 +340,7 @@ def remote_is_newer(remote: Optional[str]) -> bool:
 # ===================== 数据模型 =====================
 @dataclass
 class UsageData:
-    # 存接口原始值；显示字符串在渲染层格式化（重置时刻是绝对时间，直接来自接口 resets_at，不做倒计时推算）
+    # 存接口原始值；显示在渲染层即时格式化：当前会话显示距 resets_at 还剩多久（每秒自然倒数），周限显示绝对重置时刻
     five_hour_util: Optional[float] = None
     five_hour_reset: Optional[datetime] = None
     seven_day_util: Optional[float] = None
@@ -366,7 +367,7 @@ class UsageData:
 
     @property
     def current_session_reset(self) -> str:
-        return _fmt_resettime(self.five_hour_reset)
+        return _fmt_countdown(self.five_hour_reset)
 
     @property
     def all_models_used(self) -> str:
