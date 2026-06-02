@@ -42,6 +42,7 @@ from typing import Optional
 # ---- 仓库信息 ----
 GITHUB_OWNER = "muyangli-byte"
 GITHUB_REPO = "claude-usage-indicator"
+REPO_URL = f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}"
 
 APP_NAME = "claude-usage-indicator"
 CONFIG_DIR = Path.home() / ".config" / APP_NAME
@@ -852,7 +853,8 @@ def build_app():
             self.action_update = self._action("Update now", self.on_update_now)
             self._action("Open usage page", self.on_open_page)
             self.action_lang = self._action(self._lang_label(), self.on_toggle_lang)
-            self._action(f"Quit  (v{__version__})", self.on_quit)
+            self._action(f"About (GitHub)  v{__version__}", self.on_about)
+            self._action("Quit", self.on_quit)
             self.menu.show_all()
             self.indicator.set_menu(self.menu)
             self.action_update.set_visible(False)  # 只有 check 到新版才显示这一行
@@ -1044,6 +1046,12 @@ def build_app():
         def on_open_page(self, _w) -> None:
             try:
                 subprocess.Popen(["xdg-open", USAGE_PAGE_URL])
+            except Exception as exc:
+                print(f"[open] xdg-open failed: {exc}", flush=True)
+
+        def on_about(self, _w) -> None:
+            try:
+                subprocess.Popen(["xdg-open", REPO_URL])
             except Exception as exc:
                 print(f"[open] xdg-open failed: {exc}", flush=True)
 
