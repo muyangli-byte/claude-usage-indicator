@@ -854,6 +854,8 @@ def build_app():
             self._action("Open usage page", self.on_open_page)
             self.action_lang = self._action(self._lang_label(), self.on_toggle_lang)
             self._action(f"About (GitHub)  v{__version__}", self.on_about)
+            self.menu.append(Gtk.SeparatorMenuItem())
+            self._action("Uninstall…", self.on_uninstall)
             self._action("Quit", self.on_quit)
             self.menu.show_all()
             self.indicator.set_menu(self.menu)
@@ -1055,6 +1057,45 @@ def build_app():
             except Exception as exc:
                 print(f"[open] xdg-open failed: {exc}", flush=True)
 
+        def on_uninstall(self, _w) -> None:
+            dialog = Gtk.MessageDialog(
+                transient_for=None, modal=True,
+                message_type=Gtk.MessageType.WARNING, buttons=Gtk.ButtonsType.NONE,
+                text=self.L("卸载 Claude Usage Indicator？", "Uninstall Claude Usage Indicator?"),
+            )
+            dialog.format_secondary_text(self.L(
+                "将停止并删除：后台服务、命令、安装目录、配置——干净无痕。完成后会打开项目主页。\n（随时可用一行命令重新安装。）",
+                "This stops and removes the service, command, install directory and config — clean and complete. "
+                "The project page opens when done.\n(You can reinstall anytime with the one-liner.)"))
+            dialog.add_button(self.L("取消", "Cancel"), Gtk.ResponseType.CANCEL)
+            dialog.add_button(self.L("卸载", "Uninstall"), Gtk.ResponseType.OK)
+            dialog.set_default_response(Gtk.ResponseType.CANCEL)
+            resp = dialog.run()
+            dialog.destroy()
+            if resp != Gtk.ResponseType.OK:
+                return
+
+            here = Path(__file__).resolve().parent
+            py = str(here / "venv" / "bin" / "python")
+            script = str(here / "claude_usage_indicator.py")
+            # 把图形会话环境传给瞬时单元，这样卸载完 xdg-open 才能打开浏览器
+            setenv = [f"--setenv={k}={os.environ[k]}"
+                      for k in ("DISPLAY", "WAYLAND_DISPLAY", "DBUS_SESSION_BUS_ADDRESS",
+                                "XAUTHORITY", "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP")
+                      if os.environ.get(k)]
+            self._notify(self.L("正在卸载…", "Uninstalling…"),
+                         self.L("正在删除服务与文件，完成后打开项目主页。",
+                                "Removing the service and files; the project page opens when done."), kind="info")
+            try:
+                # 独立 systemd 瞬时单元：卸载里 systemctl stop 杀掉本服务时不会把卸载进程一起带走
+                subprocess.Popen(["systemd-run", "--user", "--collect", *setenv, py, script, "--uninstall"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except FileNotFoundError:  # 没有 systemd-run：脱离会话起子进程兜底
+                subprocess.Popen([py, script, "--uninstall"],
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                 start_new_session=True)
+            Gtk.main_quit()  # 立刻收起托盘图标；卸载在独立单元里继续
+
         def on_toggle_lang(self, _w) -> None:
             self.lang = "en" if self.lang == "zh" else "zh"
             _write_config({"lang": self.lang})
@@ -1248,6 +1289,33 @@ def cmd_self_update() -> int:
     return 0
 
 
+def cmd_uninstall() -> int:
+    """托盘「Uninstall」触发，在独立 systemd 瞬时单元里运行（不会被 systemctl stop 连带杀掉）：
+    等触发它的 GUI 退出后，用 uninstall.sh --purge 彻底删除 服务/命令/安装目录/配置，最后打开项目主页。"""
+    here = Path(__file__).resolve().parent
+    time.sleep(1)  # 让触发它的 GUI 先退出，避免和 uninstall.sh 里的 systemctl stop 抢
+    uninstaller = here / "uninstall.sh"
+    try:
+        if uninstaller.exists():
+            subprocess.run(["bash", str(uninstaller), "--purge"], check=False)
+        else:  # 兜底：uninstall.sh 不在就内联清（路径与 uninstall.sh 一致）
+            home = Path.home()
+            subprocess.run(["systemctl", "--user", "disable", "--now", f"{APP_NAME}.service"], check=False)
+            shutil.rmtree(home / ".local/share" / APP_NAME, ignore_errors=True)
+            shutil.rmtree(home / ".config" / APP_NAME, ignore_errors=True)
+            (home / ".local/bin" / APP_NAME).unlink(missing_ok=True)
+            (home / ".config/systemd/user" / f"{APP_NAME}.service").unlink(missing_ok=True)
+            subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+    except Exception as e:
+        print(f"[uninstall] {e}", flush=True)
+    try:
+        subprocess.Popen(["xdg-open", REPO_URL])  # 完成后打开项目主页
+    except Exception as e:
+        print(f"[uninstall] xdg-open failed: {e}", flush=True)
+    time.sleep(3)  # 给浏览器 dbus 激活/启动留点时间，再让本瞬时单元被回收
+    return 0
+
+
 def cmd_check() -> int:
     remote = fetch_remote_version()
     if remote_is_newer(remote):
@@ -1265,11 +1333,14 @@ def main() -> None:
     p.add_argument("--update", action="store_true", help="更新到最新版（重跑安装脚本，含系统库，需 sudo）")
     p.add_argument("--self-update", action="store_true", help="轻量自更新：git+pip+重启，无需 sudo（托盘 Update now 用）")
     p.add_argument("--doctor", action="store_true", help="扫描并自检登录态/凭证（不泄露密钥；安装脚本与排错用）")
+    p.add_argument("--uninstall", action="store_true", help="彻底卸载（托盘 Uninstall 用；删服务/命令/安装目录/配置后打开项目主页）")
     p.add_argument("--lang", choices=["zh", "en"], help="输出语言（默认按系统/配置自动判断）")
     args = p.parse_args()
 
     if args.doctor:
         sys.exit(cmd_doctor(args.lang or load_lang()))
+    if args.uninstall:
+        sys.exit(cmd_uninstall())
     if args.once:
         sys.exit(cmd_once())
     if args.check:
