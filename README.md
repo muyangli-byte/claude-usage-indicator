@@ -14,6 +14,27 @@ Cur 39% 2h56m | All 5% Mon 7am
 
 ---
 
+## 🚀 快速开始
+
+1. 在 **Chrome / Chromium / Brave / Edge** 任一浏览器登录 [`https://claude.ai`](https://claude.ai)（**哪个 profile 都行**，会自动扫描所有 profile）
+2. 终端运行一行命令（**交互式**：先选语言、检查环境，装好依赖后**先验证你的登录态**——显示读到哪个浏览器、哪个 profile、sessionKey 是否拿到——确认 OK 才激活后台服务）：
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/muyangli-byte/claude-usage-indicator/main/install.sh | bash
+   ```
+3. 几秒后顶栏出现你的 Claude 用量 ✅
+
+**随时自检登录态 / 凭证**（扫描所有浏览器 profile，不泄露任何密钥）：
+
+```bash
+claude-usage-indicator --doctor            # 跟随系统语言
+claude-usage-indicator --doctor --lang zh  # 强制中文
+```
+
+> 仅支持 **Debian / Ubuntu 桌面**。详细前置条件、更新、卸载、排错见下文。
+
+---
+
 ## 工作原理
 
 1. 用 [`browser_cookie3`](https://github.com/borisbabic/browser_cookie3) 从 Chrome 的 cookie 库自动读取 `sessionKey`
@@ -207,6 +228,25 @@ Cur 39% 2h56m | All 5% Mon 7am
 - ✅ **No open web page, no Tampermonkey, no browser extension**
 - ✅ A single background Python process, auto‑starts on login
 - ✅ Reads your login from Chrome automatically — virtually zero maintenance
+
+## 🚀 Quick Start
+
+1. Log into [`https://claude.ai`](https://claude.ai) in **Chrome / Chromium / Brave / Edge** (**any profile** — all profiles are scanned automatically).
+2. Run one line in a terminal (**interactive**: it asks your language, checks the environment, installs deps, then **verifies your login** — showing which browser/profile it found and whether the sessionKey was obtained — and only activates the background service once that's OK):
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/muyangli-byte/claude-usage-indicator/main/install.sh | bash
+   ```
+3. Your Claude usage appears in the top bar within seconds ✅
+
+**Self-check your login / credentials anytime** (scans every browser profile; never leaks any secret):
+
+```bash
+claude-usage-indicator --doctor            # follows your system language
+claude-usage-indicator --doctor --lang en  # force English
+```
+
+> **Debian / Ubuntu desktop only.** Full prerequisites, updates, uninstall, and troubleshooting are below.
 
 ## How it works
 
