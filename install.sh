@@ -31,9 +31,16 @@ if (exec </dev/tty >/dev/tty) 2>/dev/null; then INTERACTIVE=1; else INTERACTIVE=
 # ---- 语言 ----
 case "${LANG:-}" in zh*) LC=zh;; *) LC=en;; esac
 if [ "$INTERACTIVE" = 1 ]; then
-  printf '\n  Choose language / 选择语言:\n    1) English\n    2) 中文\n  [default %s] > ' "$LC" > /dev/tty
+  if [ "$LC" = zh ]; then _def=1; else _def=2; fi
+  {
+    printf '\n  请选择语言 / Choose your language\n'
+    printf '  ────────────────────────────────\n'
+    printf '    【1】 中文\n'
+    printf '    【2】 English\n\n'
+    printf '  输入 1 或 2 后回车 / Type 1 or 2, then Enter  〔默认 default: %s〕: ' "$_def"
+  } > /dev/tty
   IFS= read -r _l < /dev/tty || _l=""
-  case "$_l" in 1|e|E|en|EN) LC=en;; 2|z|Z|zh|ZH|中*) LC=zh;; *) : ;; esac
+  case "$_l" in 1|zh|ZH|中*) LC=zh;; 2|en|EN|e|E) LC=en;; *) : ;; esac
 fi
 
 # ---- 输出助手（双语；msg 支持 printf 占位符）----
@@ -130,8 +137,17 @@ msg "【4/5】验证 claude.ai 登录态（激活服务前）…" "[4/5] Verifyi
 GATE=0
 while :; do
   if [ "$INTERACTIVE" = 1 ]; then
-    msg "\n请在浏览器（Chrome/Chromium/Brave/Edge）登录 https://claude.ai，登录好后按回车开始检查…" \
-        "\nLog into https://claude.ai in your browser (Chrome/Chromium/Brave/Edge), then press Enter to check…"
+    if [ "$LC" = zh ]; then
+      {
+        printf '\n  ▶ 第一步：在浏览器（Chrome / Chromium / Brave / Edge）登录 https://claude.ai\n'
+        printf '    登录好之后，按【回车】开始检查登录态… '
+      } > /dev/tty
+    else
+      {
+        printf '\n  ▶ Step 1: log into https://claude.ai in your browser (Chrome / Chromium / Brave / Edge)\n'
+        printf '    Once you are logged in, press [Enter] to check… '
+      } > /dev/tty
+    fi
     IFS= read -r _ < /dev/tty || true
   fi
   echo
@@ -144,9 +160,24 @@ while :; do
     break
   fi
   echo
-  msg "没拿到可用登录态。请选择：\n  1) 我已登录 / 已解锁钥匙环 —— 重新检查\n  2) 仍然继续安装（稍后自行修复）\n  3) 退出（先不激活服务）" \
-      "Login not ready. Choose:\n  1) I've logged in / unlocked the keyring — re-check\n  2) Install anyway (fix it later)\n  3) Quit (don't activate the service yet)"
-  printf '> ' > /dev/tty; IFS= read -r _ans < /dev/tty || _ans=3
+  if [ "$LC" = zh ]; then
+    {
+      printf '\n  ⚠ 没读到可用的登录态，请选择：\n'
+      printf '    【1】 我已登录 / 已解锁钥匙环 —— 重新检查\n'
+      printf '    【2】 不管它，仍然继续安装（之后自己修）\n'
+      printf '    【3】 退出，暂不激活服务\n\n'
+      printf '  输入 1 / 2 / 3 后回车  〔默认 default: 1〕: '
+    } > /dev/tty
+  else
+    {
+      printf '\n  ⚠ Could not read a usable login. Choose:\n'
+      printf '    【1】 I am logged in / keyring unlocked — re-check\n'
+      printf '    【2】 Install anyway (I will fix it later)\n'
+      printf '    【3】 Quit, do not activate the service yet\n\n'
+      printf '  Type 1 / 2 / 3, then Enter  〔default: 1〕: '
+    } > /dev/tty
+  fi
+  IFS= read -r _ans < /dev/tty || _ans=3
   case "$_ans" in
     2) break;;
     3) GATE=3; break;;
