@@ -25,7 +25,8 @@ PY="${INSTALL_DIR}/venv/bin/python"
 SCRIPT="${INSTALL_DIR}/claude_usage_indicator.py"
 
 # ---- 交互能力探测：curl|bash 时 stdin 是管道(脚本本身)，所以一律从 /dev/tty 读用户输入 ----
-if [ -r /dev/tty ] && [ -w /dev/tty ]; then INTERACTIVE=1; else INTERACTIVE=0; fi
+# 注意：不能只用 [ -r /dev/tty ]——容器/cron 里设备节点存在但打不开（无控制终端）。必须真正试开。
+if (exec </dev/tty >/dev/tty) 2>/dev/null; then INTERACTIVE=1; else INTERACTIVE=0; fi
 
 # ---- 语言 ----
 case "${LANG:-}" in zh*) LC=zh;; *) LC=en;; esac
