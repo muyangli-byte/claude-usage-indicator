@@ -6,6 +6,7 @@ __pycache__/
 # Claude Code 本地配置（含敏感的本机权限规则，绝不可提交）
 .claude/
 
-# 运行期数据 / 备份
+# 运行期数据 / 备份（注意：安装目录同时是运行数据目录，这些不能进 git，否则会触发自更新的脏树检查）
 diagnostics/
+update_result.txt
 *.bak.*

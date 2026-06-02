@@ -47,28 +47,19 @@ sudo -E apt-get install -y \
   libnotify-bin xdg-utils git curl </dev/null
 
 # ---- 2. 拉取代码 ----
-SELF_DIR="$(cd "$(dirname "$0")" 2>/dev/null && pwd || true)"
-if [ "${LOCAL_INSTALL:-0}" = "1" ] && [ -f "$SELF_DIR/claude_usage_indicator.py" ]; then
-  # 显式部署"当前 clone 的这一份"（给想运行自己审阅过的代码的人）
-  log "LOCAL_INSTALL=1：部署当前 checkout（$SELF_DIR），不拉取 main ..."
-  rm -rf "$INSTALL_DIR"
-  mkdir -p "$(dirname "$INSTALL_DIR")"
-  cp -a "$SELF_DIR" "$INSTALL_DIR"
-  rm -rf "$INSTALL_DIR/venv"   # venv 在下一步重建
+# 始终部署 GitHub 最新 main（clone 主要用于查看代码；运行副本独立在 INSTALL_DIR）。
+log "部署 GitHub 最新 main 到 ${INSTALL_DIR}（注意：装的是最新 main，不是你本地的 clone）..."
+mkdir -p "$INSTALL_DIR"
+if [ -d "$INSTALL_DIR/.git" ]; then
+  git -C "$INSTALL_DIR" fetch --depth 1 origin main
+  git -C "$INSTALL_DIR" reset --hard origin/main   # reset 不依赖共同祖先，浅克隆安全
 else
-  log "部署 GitHub 最新 main 到 ${INSTALL_DIR}（注意：装的是最新 main，不是你本地的 clone；要装本地用 LOCAL_INSTALL=1 ./install.sh）..."
-  mkdir -p "$INSTALL_DIR"
-  if [ -d "$INSTALL_DIR/.git" ]; then
-    git -C "$INSTALL_DIR" fetch --depth 1 origin main
-    git -C "$INSTALL_DIR" reset --hard origin/main
-  else
-    if [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)" ]; then
-      backup="${INSTALL_DIR}.bak.$(date +%s)"
-      log "目录非空，备份旧内容到 ${backup}"
-      mv "$INSTALL_DIR" "$backup"
-    fi
-    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+  if [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)" ]; then
+    backup="${INSTALL_DIR}.bak.$(date +%s)"
+    log "目录非空，备份旧内容到 ${backup}"
+    mv "$INSTALL_DIR" "$backup"
   fi
+  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
 fi
 
 # ---- 3. 虚拟环境 + Python 依赖 ----

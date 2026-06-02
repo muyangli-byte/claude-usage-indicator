@@ -247,12 +247,12 @@ def fetch_usage(session_key: str, org_id: str) -> dict:
     if r.status_code in (401, 403):
         if "text/html" in ct and _is_challenge(r.text):
             dump_diagnostics("cloudflare", r.status_code, r.text)
-            raise CloudflareError(f"HTTP {r.status_code} 被 Cloudflare 挑战拦截")
+            raise CloudflareError(f"HTTP {r.status_code} Cloudflare challenge")
         raise AuthError(f"HTTP {r.status_code}")
     if r.status_code != 200:
         if _is_challenge(r.text):
             dump_diagnostics("cloudflare", r.status_code, r.text)
-            raise CloudflareError(f"HTTP {r.status_code} 挑战页")
+            raise CloudflareError(f"HTTP {r.status_code} challenge page")
         raise RuntimeError(f"HTTP {r.status_code}")
 
     try:
@@ -260,26 +260,26 @@ def fetch_usage(session_key: str, org_id: str) -> dict:
     except Exception:
         if _is_challenge(r.text):
             dump_diagnostics("cloudflare", 200, r.text)
-            raise CloudflareError("HTTP 200 但返回挑战页")
+            raise CloudflareError("HTTP 200 returned a challenge page")
         dump_diagnostics("schema", 200, r.text)
-        raise SchemaError("响应不是 JSON")
+        raise SchemaError("response is not JSON")
 
     return validate_and_extract(data, r.text)
 
 
 def validate_and_extract(data, raw_text: str = "") -> dict:
-    """校验 JSON 契约并抽取原始值。结构不符抛 SchemaError 并 dump 原始响应。"""
+    """校验 JSON 契约并抽取原始值。结构不符抛 SchemaError 并 dump 原始响应（异常消息用英文，会进英文菜单）。"""
     if not isinstance(data, dict):
         dump_diagnostics("schema", 200, raw_text or json.dumps(data)[:20000])
-        raise SchemaError("顶层不是对象")
+        raise SchemaError("top level is not an object")
     for key in ("five_hour", "seven_day"):
         sub = data.get(key)
         if not isinstance(sub, dict):
             dump_diagnostics("schema", 200, raw_text or json.dumps(data))
-            raise SchemaError(f"缺少必需字段 {key}（接口结构可能变了）")
+            raise SchemaError(f"missing required field {key} (API schema changed?)")
         if not isinstance(sub.get("utilization"), (int, float)):
             dump_diagnostics("schema", 200, raw_text or json.dumps(data))
-            raise SchemaError(f"{key}.utilization 不是数字（接口结构可能变了）")
+            raise SchemaError(f"{key}.utilization is not a number (API schema changed?)")
     return json_to_raw(data)
 
 
@@ -485,7 +485,7 @@ STORE = UsageStore()
 
 # ===================== 轮询线程（自适应） =====================
 class Poller(threading.Thread):
-    def __init__(self, app: "ClaudeIndicatorApp") -> None:
+    def __init__(self, app) -> None:  # app: ClaudeIndicatorApp（定义在 build_app 内，故不标注）
         super().__init__(daemon=True)
         self.app = app
         self._wake = threading.Event()
@@ -742,14 +742,16 @@ def build_app():
             def worker():
                 remote = fetch_remote_version()
                 newer = remote_is_newer(remote)
-                STORE.set_update(remote if newer else None)
                 if newer:
                     title = self.L("↑ 发现新版本", "↑ Update available")
                     body = self.L(f"v{__version__} → v{remote}\n菜单点 Update now 一键更新",
                                   f"v{__version__} → v{remote}\nClick Update now in the menu")
 
                     def announce():
-                        self._notified_update = remote  # 在主线程内设置，避免与 _tick 竞态重复弹
+                        # set_update 与 _notified_update 都在主线程内、同一回调里设置，
+                        # 这样 _tick/refresh_ui 永远不会在两者之间看到"有新版但未通知"的中间态
+                        self._notified_update = remote
+                        STORE.set_update(remote)
                         self._notify(title, body)
                         self.refresh_ui()
                         return False
@@ -758,7 +760,13 @@ def build_app():
                     title = self.L("Claude 用量指示器", "Claude usage indicator")
                     body = self.L(f"已是最新版 v{__version__}（无需更新）",
                                   f"Already up to date (v{__version__})")
-                    GLib.idle_add(lambda: self._notify(title, body) or self.refresh_ui())
+
+                    def announce_none():
+                        STORE.set_update(None)
+                        self._notify(title, body)
+                        self.refresh_ui()
+                        return False
+                    GLib.idle_add(announce_none)
             threading.Thread(target=worker, daemon=True).start()
 
         def on_update_now(self, _w) -> None:
@@ -872,36 +880,43 @@ def cmd_self_update() -> int:
         return 1
 
     here = Path(__file__).resolve().parent
+    # 清掉可能残留的旧面包屑，免得它被下面的脏树检查/git 当成改动而卡住更新
+    try:
+        UPDATE_RESULT.unlink()
+    except Exception:
+        pass
     if not (here / ".git").exists():
         return fail("not a git install dir; use --update instead")
     try:
-        # 保护开发副本：有未提交改动就别动，避免 reset 丢工作
+        # 保护未提交改动：脏树就别动（避免 reset 丢工作）
         dirty = subprocess.run(["git", "-C", str(here), "status", "--porcelain"],
                                capture_output=True, text=True)
         if dirty.stdout.strip():
             return fail("local uncommitted changes; skipped (update manually or use --update)")
+        # 浅克隆（git clone --depth 1）下不能用 merge --ff-only：fetch 来的新提交与本地无共同祖先，
+        # 会报 'refusing to merge unrelated histories'。fetch 后 reset 到 FETCH_HEAD（浅克隆安全，
+        # 且上面的脏树检查已护住未提交改动）。
         subprocess.run(["git", "-C", str(here), "fetch", "--depth", "1", "origin", "main"], check=True)
-        # ff-only：开发副本若领先/分叉会安全失败，不会丢本地提交
-        subprocess.run(["git", "-C", str(here), "merge", "--ff-only", "origin/main"], check=True)
-    except subprocess.CalledProcessError:
-        return fail("git update failed (local branch ahead/diverged?)")
+        subprocess.run(["git", "-C", str(here), "reset", "--hard", "FETCH_HEAD"], check=True)
 
-    # 校验 venv（python 小版本升级后旧 venv 会失效），坏了就重建
-    venv = here / "venv"
-    py = venv / "bin" / "python"
-    if not (py.exists() and subprocess.run([str(py), "-c", "pass"]).returncode == 0):
+        # 校验 venv（python 小版本升级后旧 venv 会失效），坏了就重建
+        venv = here / "venv"
+        py = venv / "bin" / "python"
         try:
+            venv_ok = py.exists() and subprocess.run([str(py), "-c", "pass"]).returncode == 0
+        except Exception:
+            venv_ok = False
+        if not venv_ok:
             if venv.exists():
                 shutil.rmtree(venv)
             subprocess.run(["python3", "-m", "venv", str(venv)], check=True)
-        except Exception:
-            return fail("venv rebuild failed; use --update")
-    pip = venv / "bin" / "pip"
-    try:
+        pip = venv / "bin" / "pip"
         subprocess.run([str(pip), "install", "-q", "--upgrade", "pip", "wheel"], check=True)
         subprocess.run([str(pip), "install", "-q", "-r", str(here / "requirements.txt")], check=True)
-    except subprocess.CalledProcessError:
-        return fail("pip install failed (new system libs needed? use --update)")
+    except subprocess.CalledProcessError as e:
+        return fail(f"update step failed ({e}); try --update")
+    except Exception as e:  # 任何意外都留下 fail 面包屑，保证 GUI 有反馈
+        return fail(f"unexpected error ({e}); try --update")
 
     newver = _read_version()
     _write_update_result(f"ok|{newver}")  # 先写成功，重启后新进程读到并通知
