@@ -900,7 +900,7 @@ def build_app():
             self.indicator.set_label("Claude usage waiting...", "Claude usage")
 
             self.menu = Gtk.Menu()
-            self.item_summary = self._info("Waiting for Claude usage...")
+            # 不再重复托盘标签那行（顶栏已显示 "Cur … | All …"）；菜单直接从分项开始
             self.item_session = self._info("Current session: --")
             self.item_all = self._info("All models (weekly): --")
             self.item_sonnet = self._info("Sonnet (weekly): --")
@@ -961,7 +961,6 @@ def build_app():
             d = STORE.get()
             label = d.short_label()
             self.indicator.set_label(label, label)
-            self.item_summary.set_label(label)
             self.item_session.set_label(f"Current session: {d.current_session_used} | reset {d.current_session_reset}")
             self.item_all.set_label(f"All models (weekly): {d.all_models_used} | reset {d.all_models_reset}")
             self.item_sonnet.set_label(f"Sonnet (weekly): {d.sonnet_used}")
@@ -995,10 +994,15 @@ def build_app():
 
         def _notify(self, title: str, body: str, kind: str = "info") -> None:
             icon = NOTIFY_ICONS.get(kind, "dialog-information")
+            # GNOME 会忽略自定义超时：普通(normal)通知约 4 秒就收进消息列表，critical 则一直留在横幅直到手动关闭。
+            # 其他桌面(KDE/XFCE/MATE)会遵循超时。所以重要的(发现新版本 / 异常)用 critical + 永不超时，
+            # 停留够久不易错过；普通信息给 12 秒。
+            urgent = kind in ("update", "warn")
             if have_notify:
                 try:
                     n = Notify.Notification.new(title, body, icon)
-                    n.set_urgency(Notify.Urgency.NORMAL)
+                    n.set_urgency(Notify.Urgency.CRITICAL if urgent else Notify.Urgency.NORMAL)
+                    n.set_timeout(0 if urgent else 12000)  # 0 = 永不自动消失（直到用户关闭）
                     try:
                         n.add_action("open", self.L("打开用量页", "Open usage page"),
                                      lambda *a: self.on_open_page(None), None)
@@ -1010,9 +1014,10 @@ def build_app():
                 except Exception as exc:
                     print(f"[notify] libnotify failed: {exc}", flush=True)
             try:
-                # 无 libnotify 时也带上应用名与语义图标
-                subprocess.Popen(["notify-send", "-a", "Claude Usage Indicator",
-                                  "-i", icon, "-u", "normal", title, body])
+                # 无 libnotify 时也带上应用名、语义图标、紧急度与停留时长
+                subprocess.Popen(["notify-send", "-a", "Claude Usage Indicator", "-i", icon,
+                                  "-u", "critical" if urgent else "normal",
+                                  "-t", "0" if urgent else "12000", title, body])
             except Exception as exc:
                 print(f"[notify] notify-send failed: {exc}", flush=True)
 
