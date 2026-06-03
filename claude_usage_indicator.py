@@ -68,7 +68,10 @@ POLL_SLOW_S = 90            # 长时间无变化时退避到的慢轮询间隔
 POLL_ERROR_S = 60           # 出错时的重试间隔（避免猛打一个失败/被拦的接口）
 RENOTIFY_BAD_S = 1800       # 持续异常时，每 30 分钟再提醒一次
 REQUEST_TIMEOUT_S = 20
-UPDATE_CHECK_INTERVAL_S = 86400  # 每天查一次新版本
+UPDATE_CHECK_INTERVAL_S = 86400  # 轮询兜底：每天查一次（即时通知靠下面的 ntfy 推送）
+# 发布即时通知：发布(VERSION 变化)时 GitHub Action 往这个公开 ntfy 主题发一条信号，
+# 客户端常驻订阅、收到就立刻去 GitHub 复核版本（GitHub 仍是唯一真相源，ntfy 只当触发器）。
+NTFY_TOPIC = "claude-usage-indicator-muyangli-byte-7c1e9a"
 USAGE_PAGE_URL = "https://claude.ai/new#settings/usage"
 BROWSERS = ["chrome", "chromium", "brave", "edge"]  # 依次尝试读取 cookie
 
@@ -585,9 +588,26 @@ def _ver_tuple(s) -> tuple:
 def fetch_remote_version() -> Optional[str]:
     from curl_cffi import requests as creq
 
+    ua = {"User-Agent": f"{APP_NAME}/{__version__}"}
+    # 优先 GitHub contents API（raw media type 直接返回文件内容，缓存仅 ~60s）——
+    # 比 raw.githubusercontent 的 5 分钟 CDN 缓存新鲜得多，ntfy 推送后能立刻读到新版本。
+    api = (f"https://api.github.com/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/VERSION?ref=main")
+    try:
+        r = creq.get(api, timeout=10,
+                     headers={**ua, "Accept": "application/vnd.github.raw+json"})
+        if r.status_code == 200 and r.text.strip():
+            t = r.text.strip()
+            if t[:1] == "{":  # 万一拿到的是 JSON（content 为 base64）
+                import base64
+                t = base64.b64decode(json.loads(t).get("content", "")).decode().strip()
+            if t:
+                return t
+    except Exception:
+        pass
+    # 兜底：raw（有 ~5 分钟 CDN 缓存，但作为兜底足够）
     url = f"https://raw.githubusercontent.com/{GITHUB_OWNER}/{GITHUB_REPO}/main/VERSION"
     try:
-        r = creq.get(url, timeout=10)
+        r = creq.get(url, timeout=10, headers=ua)
         if r.status_code == 200:
             return r.text.strip()
     except Exception:
@@ -770,13 +790,53 @@ class Poller(threading.Thread):
         except Exception as e:
             return "http", str(e)[:120], None
 
-    def _maybe_check_update(self) -> None:
-        now = time.time()
-        if now - self._last_update_check < UPDATE_CHECK_INTERVAL_S:
-            return
-        self._last_update_check = now
+    def _check_update_now(self) -> None:
+        """立即查一次新版本（ntfy 推送触发 / 到了轮询间隔都走这里），结果写入 STORE 并刷新 UI。"""
+        self._last_update_check = time.time()
         remote = fetch_remote_version()
         STORE.set_update(remote if remote_is_newer(remote) else None)
+        try:
+            from gi.repository import GLib
+            GLib.idle_add(self.app.refresh_ui)
+        except Exception:
+            pass
+
+    def _maybe_check_update(self) -> None:
+        if time.time() - self._last_update_check < UPDATE_CHECK_INTERVAL_S:
+            return
+        self._check_update_now()
+
+    def _ntfy_loop(self) -> None:
+        """常驻订阅 ntfy 主题；收到任意消息就立刻去 GitHub 复核版本（GitHub 仍是真相源，
+        所以即便有人往公开主题发垃圾也只是多查一次、不会误报）。断线指数退避重连；
+        ntfy 不可达完全不影响每天一次的轮询兜底。"""
+        import urllib.request
+        url = f"https://ntfy.sh/{NTFY_TOPIC}/json"
+        backoff = 5
+        while True:
+            try:
+                req = urllib.request.Request(
+                    url, headers={"User-Agent": f"{APP_NAME}/{__version__}"})
+                with urllib.request.urlopen(req, timeout=120) as resp:
+                    backoff = 5  # 连上即重置退避
+                    for raw in resp:  # 按行阻塞读取：每条消息一行 JSON，外加周期性 keepalive
+                        line = raw.decode("utf-8", "replace").strip()
+                        if not line:
+                            continue
+                        try:
+                            ev = json.loads(line)
+                        except Exception:
+                            continue
+                        if ev.get("event") == "message":
+                            print("[ntfy] 收到发布信号 → 立即复核 GitHub 版本", flush=True)
+                            try:
+                                self._check_update_now()
+                            except Exception:
+                                pass
+            except Exception as e:
+                print(f"[ntfy] 断开（{type(e).__name__}），{backoff}s 后重连", flush=True)
+            time.sleep(backoff)
+            backoff = min(backoff * 2, 300)
 
     def _next_interval(self, status: str, changed: bool) -> int:
         if status != "ok":
@@ -791,6 +851,7 @@ class Poller(threading.Thread):
 
     def run(self) -> None:
         from gi.repository import GLib
+        threading.Thread(target=self._ntfy_loop, daemon=True).start()  # 即时发布通知（订阅）
         while True:
             try:
                 status, msg, fields = self._do_fetch()

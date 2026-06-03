@@ -1,0 +1,26 @@
+name: notify-release
+
+# 发布即时通知：当推送到 main 且改动了 VERSION（= 发了新版本）时，
+# 往公开的 ntfy.sh 主题发一条信号。正在运行的客户端常驻订阅该主题，
+# 收到后会立刻去 GitHub 复核版本并弹「有新版本」通知（GitHub 仍是唯一真相源）。
+# 主题名必须与 claude_usage_indicator.py 里的 NTFY_TOPIC 一致。
+
+on:
+  push:
+    branches: [main]
+    paths: ['VERSION']
+
+jobs:
+  ntfy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Publish update signal to ntfy.sh
+        run: |
+          VER="$(tr -d '[:space:]' < VERSION)"
+          echo "Publishing update signal for v${VER}"
+          curl -fsSL \
+            -H "Title: Claude Usage Indicator" \
+            -H "Tags: arrow_up" \
+            -d "New version v${VER} is available — open the tray menu and click \"Update now\"." \
+            "https://ntfy.sh/claude-usage-indicator-muyangli-byte-7c1e9a"
