@@ -925,7 +925,9 @@ def build_app():
             self._last_status = "init"
             self._last_notify_t = 0.0
             self._notified_update = None
-            self._notification = None
+            # 按「类别」复用通知对象：同类(如反复的异常告警)原地更新同一条、不堆叠；
+            # 不同类(更新 vs 告警)各自一条、互不覆盖。保住引用也避免被 GC 导致按钮回调失效。
+            self._notifs: dict = {}
             self.poller: Optional[Poller] = None
 
             GLib.timeout_add_seconds(1, self._tick)  # 每秒重绘：倒计时平滑走动 + 健康判断
@@ -1000,15 +1002,21 @@ def build_app():
             urgent = kind in ("update", "warn")
             if have_notify:
                 try:
-                    n = Notify.Notification.new(title, body, icon)
+                    # 同一类别复用同一条通知：已存在就原地 update（守护进程按同 id 刷新、不堆叠新横幅），
+                    # 否则新建并挂上「打开用量页」动作。引用存进 self._notifs，避免被 GC 致动作回调失效。
+                    n = self._notifs.get(kind)
+                    if n is None:
+                        n = Notify.Notification.new(title, body, icon)
+                        try:
+                            n.add_action("open", self.L("打开用量页", "Open usage page"),
+                                         lambda *a: self.on_open_page(None), None)
+                        except Exception:
+                            pass
+                        self._notifs[kind] = n
+                    else:
+                        n.update(title, body, icon)
                     n.set_urgency(Notify.Urgency.CRITICAL if urgent else Notify.Urgency.NORMAL)
                     n.set_timeout(0 if urgent else 12000)  # 0 = 永不自动消失（直到用户关闭）
-                    try:
-                        n.add_action("open", self.L("打开用量页", "Open usage page"),
-                                     lambda *a: self.on_open_page(None), None)
-                    except Exception:
-                        pass
-                    self._notification = n
                     n.show()
                     return
                 except Exception as exc:
