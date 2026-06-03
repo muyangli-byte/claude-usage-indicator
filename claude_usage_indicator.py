@@ -1329,15 +1329,24 @@ def cmd_self_update() -> int:
             venv_ok = py.exists() and subprocess.run([str(py), "-c", "pass"]).returncode == 0
         except Exception:
             venv_ok = False
+        # 构建用「与用户环境隔离」的干净环境（同 install.sh）：系统 PATH、忽略 conda/pyenv、
+        # 忽略 PYTHONPATH/PIP_*/pip.conf、锁定官方源——保证重建出的 venv 与全新安装完全一致。
+        clean_env = {
+            "HOME": os.path.expanduser("~"), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8", "PYTHONNOUSERSITE": "1",
+            "PIP_CONFIG_FILE": "/dev/null", "PIP_DISABLE_PIP_VERSION_CHECK": "1",
+            "PIP_NO_INPUT": "1", "PIP_NO_CACHE_DIR": "1",
+        }
         if not venv_ok:
             if venv.exists():
                 shutil.rmtree(venv)
             # 用系统 Python 建 venv（绝不用 conda/pyenv 的，否则运行期 libffi 与系统 libgobject 冲突）
             sys_py = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else "python3"
-            subprocess.run([sys_py, "-m", "venv", str(venv)], check=True)
+            subprocess.run([sys_py, "-m", "venv", str(venv)], check=True, env=clean_env)
         pip = venv / "bin" / "pip"
-        subprocess.run([str(pip), "install", "-q", "--upgrade", "pip", "wheel"], check=True)
-        subprocess.run([str(pip), "install", "-q", "-r", str(here / "requirements.txt")], check=True)
+        idx = ["--index-url", "https://pypi.org/simple"]
+        subprocess.run([str(pip), "install", "-q", *idx, "--upgrade", "pip", "wheel"], check=True, env=clean_env)
+        subprocess.run([str(pip), "install", "-q", *idx, "-r", str(here / "requirements.txt")], check=True, env=clean_env)
     except subprocess.CalledProcessError as e:
         return fail(f"update step failed ({e}); try --update")
     except Exception as e:  # 任何意外都留下 fail 面包屑，保证 GUI 有反馈

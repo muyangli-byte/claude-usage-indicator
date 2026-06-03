@@ -115,16 +115,25 @@ else
   fi
   git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
 fi
-# venv 必须用「系统」Python（/usr/bin/python3），绝不能用 conda/pyenv 的 Python：否则运行时会加载
-# conda 的 libffi，与系统 libgobject 冲突（ImportError: undefined symbol: ffi_type_uint32），GUI 直接崩、
-# 服务无限重启、托盘没图标。用绝对路径调用，绕开 conda 激活对 PATH 的劫持。
+# ── 与用户环境完全隔离 ──
+# 构建（建 venv / 装 pip 依赖 / 编译 PyGObject）一律在 env -i 清空后的「白名单」环境里跑，
+# 不受 conda/pyenv、自定义 PATH、PYTHONPATH/PYTHONHOME、PIP_* 与 ~/.config/pip/pip.conf（可能指向
+# 私有源）、LD_LIBRARY_PATH/LD_PRELOAD 等任何用户定制影响 → 所有人装出来的环境完全一致。
+# venv 必须用「系统」Python（/usr/bin/python3）；pip 锁定官方源、忽略用户 pip 配置、不用缓存。
+clean_build(){ env -i \
+  HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
+  LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+  PYTHONNOUSERSITE=1 \
+  PIP_CONFIG_FILE=/dev/null PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_INPUT=1 PIP_NO_CACHE_DIR=1 \
+  "$@"; }
 SYS_PY="/usr/bin/python3"; [ -x "$SYS_PY" ] || SYS_PY="$(command -v python3)"
-_build_venv(){ rm -rf "$INSTALL_DIR/venv"; "$SYS_PY" -m venv "$INSTALL_DIR/venv"; }
+_build_venv(){ rm -rf "$INSTALL_DIR/venv"; clean_build "$SYS_PY" -m venv "$INSTALL_DIR/venv"; }
 _pip_install(){
-  "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip wheel
-  "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+  clean_build "$INSTALL_DIR/venv/bin/pip" install -q --index-url https://pypi.org/simple --upgrade pip wheel
+  clean_build "$INSTALL_DIR/venv/bin/pip" install -q --index-url https://pypi.org/simple -r "$INSTALL_DIR/requirements.txt"
 }
-_gi_ok(){ "$PY" -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk, GLib" >/dev/null 2>&1; }
+# import gi 冒烟自检也在隔离环境里跑（剔除 LD_LIBRARY_PATH 等），代表服务运行时的真实加载情况
+_gi_ok(){ clean_build "$PY" -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk, GLib" >/dev/null 2>&1; }
 
 # 重建条件：venv 缺失 / python 失效（小版本升级后 symlink 悬空）/ 不是用系统 Python 建的（如 conda）
 need_build=0
@@ -146,11 +155,11 @@ fi
 _gi_ok || err "PyGObject 仍无法加载。请勿在 conda 环境内安装（先运行 'conda deactivate' 再重试），或把上面的日志发回。"
 chmod +x "$INSTALL_DIR/run.sh"
 
-# 命令包装器（无害，提前装好，便于下面用 `claude-usage-indicator --doctor` 自查）
+# 命令包装器：统一走 run.sh（同一套环境隔离），用户手动 `claude-usage-indicator …` 也不受其 shell 定制影响
 mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/$APP" <<EOF
 #!/usr/bin/env bash
-exec "$PY" "$SCRIPT" "\$@"
+exec "$INSTALL_DIR/run.sh" "\$@"
 EOF
 chmod +x "$BIN_DIR/$APP"
 
@@ -173,7 +182,7 @@ while :; do
     IFS= read -r _ < /dev/tty || true
   fi
   echo
-  if "$PY" "$SCRIPT" --doctor --lang "$LC"; then
+  if "$INSTALL_DIR/run.sh" --doctor --lang "$LC"; then
     break
   fi
   if [ "$INTERACTIVE" != 1 ]; then
