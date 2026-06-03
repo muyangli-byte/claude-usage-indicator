@@ -115,13 +115,35 @@ else
   fi
   git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
 fi
-# venv 不存在或 python 小版本升级后失效（symlink 悬空）都重建，让"重跑=更新"能自愈
-if [ ! -d "$INSTALL_DIR/venv" ] || ! "$PY" -c 'pass' >/dev/null 2>&1; then
-  rm -rf "$INSTALL_DIR/venv"
-  python3 -m venv "$INSTALL_DIR/venv"
+# venv 必须用「系统」Python（/usr/bin/python3），绝不能用 conda/pyenv 的 Python：否则运行时会加载
+# conda 的 libffi，与系统 libgobject 冲突（ImportError: undefined symbol: ffi_type_uint32），GUI 直接崩、
+# 服务无限重启、托盘没图标。用绝对路径调用，绕开 conda 激活对 PATH 的劫持。
+SYS_PY="/usr/bin/python3"; [ -x "$SYS_PY" ] || SYS_PY="$(command -v python3)"
+_build_venv(){ rm -rf "$INSTALL_DIR/venv"; "$SYS_PY" -m venv "$INSTALL_DIR/venv"; }
+_pip_install(){
+  "$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip wheel
+  "$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+}
+_gi_ok(){ "$PY" -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk, GLib" >/dev/null 2>&1; }
+
+# 重建条件：venv 缺失 / python 失效（小版本升级后 symlink 悬空）/ 不是用系统 Python 建的（如 conda）
+need_build=0
+[ -d "$INSTALL_DIR/venv" ] && "$PY" -c 'pass' >/dev/null 2>&1 || need_build=1
+if [ "$need_build" = 0 ]; then
+  bp="$("$PY" -c 'import sys; print(sys.base_prefix)' 2>/dev/null || echo '')"
+  case "$bp" in
+    /usr|/usr/*) : ;;  # 系统 Python，OK（Ubuntu 下 base_prefix 正是 /usr，无尾斜杠）
+    *) need_build=1; log "现有 venv 不是系统 Python（base=$bp，疑似 conda/pyenv），重建以避免 libffi 冲突…" ;;
+  esac
 fi
-"$INSTALL_DIR/venv/bin/pip" install --quiet --upgrade pip wheel
-"$INSTALL_DIR/venv/bin/pip" install --quiet -r "$INSTALL_DIR/requirements.txt"
+[ "$need_build" = 1 ] && _build_venv
+_pip_install
+# 自愈兜底：若 PyGObject 仍加载不了（如老 venv 是 conda Python 建的），用系统 Python 重建一次再装
+if ! _gi_ok; then
+  log "PyGObject 加载失败（多半 venv 用了 conda 的 Python）。改用系统 Python 重建 venv…"
+  _build_venv; _pip_install
+fi
+_gi_ok || err "PyGObject 仍无法加载。请勿在 conda 环境内安装（先运行 'conda deactivate' 再重试），或把上面的日志发回。"
 chmod +x "$INSTALL_DIR/run.sh"
 
 # 命令包装器（无害，提前装好，便于下面用 `claude-usage-indicator --doctor` 自查）

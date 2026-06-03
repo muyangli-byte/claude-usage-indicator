@@ -1271,7 +1271,9 @@ def cmd_self_update() -> int:
         if not venv_ok:
             if venv.exists():
                 shutil.rmtree(venv)
-            subprocess.run(["python3", "-m", "venv", str(venv)], check=True)
+            # 用系统 Python 建 venv（绝不用 conda/pyenv 的，否则运行期 libffi 与系统 libgobject 冲突）
+            sys_py = "/usr/bin/python3" if os.path.exists("/usr/bin/python3") else "python3"
+            subprocess.run([sys_py, "-m", "venv", str(venv)], check=True)
         pip = venv / "bin" / "pip"
         subprocess.run([str(pip), "install", "-q", "--upgrade", "pip", "wheel"], check=True)
         subprocess.run([str(pip), "install", "-q", "-r", str(here / "requirements.txt")], check=True)
