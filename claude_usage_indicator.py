@@ -61,6 +61,13 @@ def _read_version() -> str:
 
 __version__ = _read_version()
 
+# dev / 正式版自动区分：从「安装目录」(~/.local/share/...) 跑 = 正式版；从别处(如开发仓库
+# ~/claude-usage-indicator) 跑 = dev。dev 只改运行期标识(托盘 id / 标题 / 版本号显示)，让 dev 能与
+# 正式版并存、且一眼可辨；不影响配置/路径/服务，也不会触发发版（发版只看 push + VERSION 变化）。
+IS_DEV = Path(__file__).resolve().parent != DATA_DIR
+DISPLAY_VERSION = f"{__version__}-dev" if IS_DEV else __version__
+APP_ID = APP_NAME + ("-dev" if IS_DEV else "")  # 托盘 indicator id（dev 用不同 id 以便并存）
+
 
 # ===================== 配置 =====================
 POLL_FAST_S = 5             # 数据在变（活跃使用）时的快轮询间隔
@@ -546,12 +553,26 @@ def json_to_raw(j: dict) -> dict:
         seven_day_util=util(j.get("seven_day")),
         seven_day_reset=reset(j.get("seven_day")),
         sonnet_util=util(j.get("seven_day_sonnet")),
+        sonnet_reset=reset(j.get("seven_day_sonnet")),
         opus_util=util(j.get("seven_day_opus")),
+        opus_reset=reset(j.get("seven_day_opus")),
     )
 
 
 def _pct(u) -> str:
     return "--" if u is None else f"{int(round(u))}%"
+
+
+MENU_INDENT = "    "  # 菜单里 reset / Last updated 等明细行的统一行首缩进（行首恒定 → 首字母对齐）
+
+
+def _bar(u, n: int = 24) -> str:
+    """纯文字进度条：▕████░░░░▏。进度条独占一行、行首对齐，所以各行的条是齐的。"""
+    if u is None:
+        return "▕" + "░" * n + "▏"
+    p = max(0.0, min(100.0, float(u)))
+    f = int(round(n * p / 100.0))
+    return "▕" + "█" * f + "░" * (n - f) + "▏"
 
 
 def _fmt_countdown(dt: Optional[datetime]) -> str:
@@ -575,6 +596,30 @@ def _fmt_resetday(dt: Optional[datetime]) -> str:
     ap = loc.strftime("%p").lower()
     wd = loc.strftime("%a")
     return f"{wd} {h12}:{loc.minute:02d}{ap}" if loc.minute else f"{wd} {h12}{ap}"
+
+
+# —— 菜单用的全格式（和网页一致）：'3 hr 17 min' / 'Mon 7:00 AM'。托盘标签仍用上面的简写以省空间。——
+def _fmt_countdown_long(dt: Optional[datetime]) -> str:
+    if dt is None:
+        return ""
+    secs = (dt - datetime.now(timezone.utc)).total_seconds()
+    if secs <= 0:
+        return "0 min"
+    h, m = int(secs // 3600), int((secs % 3600) // 60)
+    parts = []
+    if h:
+        parts.append(f"{h} hr")
+    if m or not h:
+        parts.append(f"{m} min")
+    return " ".join(parts)
+
+
+def _fmt_resetday_long(dt: Optional[datetime]) -> str:
+    if dt is None:
+        return ""
+    loc = dt.astimezone()
+    h12 = loc.strftime("%I").lstrip("0") or "12"
+    return f"{loc.strftime('%a')} {h12}:{loc.strftime('%M')} {loc.strftime('%p')}"
 
 
 # ===================== 版本检查 =====================
@@ -629,7 +674,9 @@ class UsageData:
     seven_day_util: Optional[float] = None
     seven_day_reset: Optional[datetime] = None
     sonnet_util: Optional[float] = None
+    sonnet_reset: Optional[datetime] = None
     opus_util: Optional[float] = None
+    opus_reset: Optional[datetime] = None
     status: str = "init"        # init|ok|auth|cloudflare|schema|http|network|cookie
     error_msg: str = ""
     received_at: Optional[datetime] = None     # 最近一次成功拉取
@@ -740,12 +787,15 @@ class Poller(threading.Thread):
         super().__init__(daemon=True)
         self.app = app
         self._wake = threading.Event()
+        self._force_creds = False  # 手动 Refresh now 时置位：下次拉取强制重读 cookie（重登立刻生效）
         self._sk: Optional[str] = None
         self._org: Optional[str] = None
         self._last_update_check = 0.0
         self._stable = 0  # 连续无变化的轮询次数（用于退避）
 
-    def wake(self) -> None:
+    def wake(self, force_creds: bool = False) -> None:
+        if force_creds:
+            self._force_creds = True
         self._wake.set()
 
     def _creds(self, force: bool = False) -> tuple[Optional[str], Optional[str]]:
@@ -754,8 +804,10 @@ class Poller(threading.Thread):
         return self._sk, self._org
 
     def _do_fetch(self) -> tuple[str, str, Optional[dict]]:
+        force = self._force_creds   # 手动刷新：强制重读 cookie，省去等 403 才发现 sessionKey 换了
+        self._force_creds = False
         try:
-            sk, org = self._creds()
+            sk, org = self._creds(force=force)
         except CookieError as e:
             return "cookie", str(e), None
         if not sk or not org:
@@ -893,7 +945,7 @@ def build_app():
         def __init__(self) -> None:
             self.lang = load_lang()
             self.indicator = AppIndicator3.Indicator.new(
-                APP_NAME, "network-transmit-receive",
+                APP_ID, "network-transmit-receive",   # dev 用 -dev 的 id，能与正式版并存
                 AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
             )
             self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
@@ -901,26 +953,48 @@ def build_app():
 
             self.menu = Gtk.Menu()
             # 不再重复托盘标签那行（顶栏已显示 "Cur … | All …"）；菜单直接从分项开始
-            self.item_session = self._info("Current session: --")
-            self.item_all = self._info("All models (weekly): --")
-            self.item_sonnet = self._info("Sonnet (weekly): --")
-            self.item_opus = self._info("Opus (weekly): --")
+            # 每个指标三行：名称（最前）/ 整条进度条 / %+reset。名称行固定，另两行在 refresh 里更新
+            # 每个指标两行：名称 / 进度条+%+reset（reset 跟在「定宽进度条」后 → 各行 reset 自动对齐）
+            self.item_session_name = self._info("Current session")
+            self.item_session_bar = self._info(f"{_bar(None)}   --")
+            self.item_all_name = self._info("All models")
+            self.item_all_bar = self._info(f"{_bar(None)}   --")
+            self.item_sonnet_name = self._info("Sonnet only")
+            self.item_sonnet_bar = self._info(f"{_bar(None)}   --")
+            self.item_opus_name = self._info("Opus only")
+            self.item_opus_bar = self._info(f"{_bar(None)}   --")
             self.item_status = self._info("Status: --")
-            self.item_updated = self._info("Updated: --")
 
             self.menu.append(Gtk.SeparatorMenuItem())
-            self._action("Refresh now", self.on_refresh_now)
-            self._action("Check for updates", self.on_check_update)
-            self.action_update = self._action("Update now", self.on_update_now)
-            self._action("Open usage page", self.on_open_page)
-            self.action_lang = self._action(self._lang_label(), self.on_toggle_lang)
-            self._action(f"About (GitHub)  v{__version__}", self.on_about)
-            self.menu.append(Gtk.SeparatorMenuItem())
-            self._action("Uninstall…", self.on_uninstall)
-            self._action("Quit", self.on_quit)
+            # 仅在出故障时显示：点开把具体故障信息以通知弹出
+            self.action_error = self._action("⚠️  Show error details", self.on_show_error)
+
+            # 所有动作都收进 More ▸ 子菜单（hover 展开）
+            more = Gtk.MenuItem(label="More")
+            submenu = Gtk.Menu()
+
+            def _sub(label, cb):
+                it = Gtk.MenuItem(label=label)
+                it.connect("activate", cb)
+                submenu.append(it)
+                return it
+
+            _sub("Refresh now", self.on_refresh_now)
+            self.action_update = _sub("Update now", self.on_update_now)
+            _sub("Check for updates", self.on_check_update)
+            _sub("Open claude usage page", self.on_open_page)
+            _sub("Send feedback / report issue", self.on_feedback)
+            self.action_lang = _sub(self._lang_label(), self.on_toggle_lang)
+            _sub(f"About (GitHub)  v{DISPLAY_VERSION}", self.on_about)
+            submenu.append(Gtk.SeparatorMenuItem())
+            _sub("Uninstall…", self.on_uninstall)
+            more.set_submenu(submenu)
+            self.menu.append(more)
+
             self.menu.show_all()
             self.indicator.set_menu(self.menu)
             self.action_update.set_visible(False)  # 只有 check 到新版才显示这一行
+            self.action_error.set_visible(False)   # 只有出故障才显示
 
             self._last_status = "init"
             self._last_notify_t = 0.0
@@ -928,6 +1002,7 @@ def build_app():
             # 按「类别」复用通知对象：同类(如反复的异常告警)原地更新同一条、不堆叠；
             # 不同类(更新 vs 告警)各自一条、互不覆盖。保住引用也避免被 GC 导致按钮回调失效。
             self._notifs: dict = {}
+            self._notif_text: dict = {}   # kind -> (title, body)，供 Copy 复制
             self.poller: Optional[Poller] = None
 
             GLib.timeout_add_seconds(1, self._tick)  # 每秒重绘：倒计时平滑走动 + 健康判断
@@ -945,6 +1020,22 @@ def build_app():
             self.menu.append(item)
             return item
 
+        def _set_metric(self, name_item, bar_item, name, util, pct_str,
+                        reset_dt, countdown=False, visible=True) -> None:
+            """两行：名称 + reset（reset 跟在标题后；标题补到等宽尽量对齐）/ 进度条+%。
+            注意：比例字体下，越长的标题(如 Current session)其 reset 会略偏右，补空格补不平。"""
+            name_item.set_visible(visible)
+            bar_item.set_visible(visible)
+            if not visible:
+                return
+            if reset_dt is not None:
+                rst = ("Resets in " + _fmt_countdown_long(reset_dt)) if countdown \
+                    else ("Resets " + _fmt_resetday_long(reset_dt))
+                name_item.set_label(f"{name} | {rst}")   # 标题 | reset，紧凑不补空格
+            else:
+                name_item.set_label(name)
+            bar_item.set_label(f"{_bar(util)}  {pct_str:>4}")
+
         def L(self, zh: str, en: str) -> str:
             return zh if self.lang == "zh" else en
 
@@ -961,19 +1052,26 @@ def build_app():
 
         def refresh_ui(self) -> bool:
             d = STORE.get()
-            label = d.short_label()
+            label = ("[dev] " if IS_DEV else "") + d.short_label()
             self.indicator.set_label(label, label)
-            self.item_session.set_label(f"Current session: {d.current_session_used} | reset {d.current_session_reset}")
-            self.item_all.set_label(f"All models (weekly): {d.all_models_used} | reset {d.all_models_reset}")
-            self.item_sonnet.set_label(f"Sonnet (weekly): {d.sonnet_used}")
-            self.item_opus.set_label(f"Opus (weekly): {d.opus_used}")
-            self.item_opus.set_visible(d.opus_used != "--")
+            # 名称行固定；这里更新每个指标的「进度条」与「%+reset」两行
+            self._set_metric(self.item_session_name, self.item_session_bar, "Current session",
+                             d.five_hour_util, d.current_session_used, d.five_hour_reset, countdown=True)
+            self._set_metric(self.item_all_name, self.item_all_bar, "All models",
+                             d.seven_day_util, d.all_models_used, d.seven_day_reset)
+            self._set_metric(self.item_sonnet_name, self.item_sonnet_bar, "Sonnet only",
+                             d.sonnet_util, d.sonnet_used, d.sonnet_reset)
+            self._set_metric(self.item_opus_name, self.item_opus_bar, "Opus only",
+                             d.opus_util, d.opus_used, d.opus_reset, visible=(d.opus_used != "--"))
             status_text = UsageData.STATUS_LABEL.get(d.status, d.status)
-            if d.status != "ok" and d.consecutive_failures > 1:
-                status_text += f" (x{d.consecutive_failures})"
-            extra = f" — {d.error_msg}" if d.error_msg else ""
-            self.item_status.set_label(f"Status: {status_text}{extra}")
-            self.item_updated.set_label(f"Updated: {d.received_clock_text()} ({d.refreshed_ago_text()})")
+            bad = d.status not in ("ok", "init")
+            if bad:
+                if d.consecutive_failures > 1:
+                    status_text += f" (x{d.consecutive_failures})"
+                status_text = f"⚠️ {status_text}"   # 故障 emoji；具体信息走「Show error details」
+            # Status 行：A | B 格式（详情不再塞这行，点菜单按钮弹通知看）
+            self.item_status.set_label(f"Status: {status_text} | Last updated: {d.refreshed_ago_text()}")
+            self.action_error.set_visible(bad)   # 仅出故障时显示「Show error details」
 
             if d.update_available:
                 self.action_update.set_label(f"⬆ Update now → v{d.update_available}")
@@ -1000,16 +1098,24 @@ def build_app():
             # 其他桌面(KDE/XFCE/MATE)会遵循超时。所以重要的(发现新版本 / 异常)用 critical + 永不超时，
             # 停留够久不易错过；普通信息给 12 秒。
             urgent = kind in ("update", "warn")
+            self._notif_text[kind] = (title, body)   # 供「Copy」按钮复制当前这条通知的内容
             if have_notify:
                 try:
                     # 同一类别复用同一条通知：已存在就原地 update（守护进程按同 id 刷新、不堆叠新横幅），
-                    # 否则新建并挂上「打开用量页」动作。引用存进 self._notifs，避免被 GC 致动作回调失效。
+                    # 否则新建并挂动作。引用存进 self._notifs，避免被 GC 致动作回调失效。
+                    # 动作：每种通知都带「Copy」(复制本条内容)；再按类型加主操作。
                     n = self._notifs.get(kind)
                     if n is None:
                         n = Notify.Notification.new(title, body, icon)
                         try:
-                            n.add_action("open", self.L("打开用量页", "Open usage page"),
-                                         lambda *a: self.on_open_page(None), None)
+                            if kind == "update":      # 发现新版本：一键更新
+                                n.add_action("update", self.L("一键更新", "Update now"),
+                                             lambda *a: self.on_update_now(None), None)
+                            else:                      # 故障 / 普通信息：打开用量页
+                                n.add_action("open", self.L("打开用量页", "Open usage page"),
+                                             lambda *a: self.on_open_page(None), None)
+                            n.add_action("copy", self.L("复制信息", "Copy"),   # 所有类型都能复制
+                                         lambda *a, k=kind: self._copy_notif(k), None)
                         except Exception:
                             pass
                         self._notifs[kind] = n
@@ -1051,13 +1157,57 @@ def build_app():
         def _notify_update(self, ver: str) -> None:
             self._notify(
                 self.L("发现新版本", "Update available"),
-                self.L(f"v{__version__} → v{ver}\n托盘菜单点 Update now 一键更新",
-                       f"v{__version__} → v{ver}\nClick Update now in the tray menu"),
+                self.L(f"v{__version__} → v{ver}\n点下方「一键更新」即可",
+                       f"v{__version__} → v{ver}\nClick “Update now” below"),
                 kind="update")
 
         def on_refresh_now(self, _w) -> None:
             if self.poller:
-                self.poller.wake()
+                self.poller.wake(force_creds=True)   # 重读 cookie：重新登录后立刻生效
+
+        def on_show_error(self, _w) -> None:
+            # 把当前故障的具体信息以通知弹出（复用分状态的提示文案 + 错误详情）
+            self._notify_status(STORE.get())
+
+        def _diag_text(self) -> str:
+            """诊断信息（复制/反馈用）：版本 + 状态 + 错误详情 + 桌面环境。"""
+            d = STORE.get()
+            label = UsageData.STATUS_LABEL.get(d.status, d.status)
+            return (f"Claude Usage Indicator v{DISPLAY_VERSION}\n"
+                    f"status: {d.status} ({label})\n"
+                    f"error: {d.error_msg or '-'}\n"
+                    f"desktop: {os.environ.get('XDG_CURRENT_DESKTOP', '?')} / "
+                    f"{os.environ.get('XDG_SESSION_TYPE', '?')}")
+
+        def _copy_notif(self, kind: str) -> None:
+            """复制该类通知的当前内容（标题+正文）+ 一行上下文（版本/状态/桌面），便于反馈/排查。
+            静默复制（不再弹「已复制」以免和带 Copy 按钮的 info 通知相互递归）。"""
+            title, body = self._notif_text.get(kind, ("", ""))
+            d = STORE.get()
+            footer = (f"— Claude Usage Indicator v{DISPLAY_VERSION} | status: {d.status} | "
+                      f"{os.environ.get('XDG_CURRENT_DESKTOP', '?')}/{os.environ.get('XDG_SESSION_TYPE', '?')}")
+            text = f"{title}\n{body}\n\n{footer}".strip()
+            try:
+                from gi.repository import Gdk
+                cb = Gtk.Clipboard.get(Gdk.SELECTION_CLIPBOARD)
+                cb.set_text(text, -1)
+                cb.store()
+                print("[copy] copied notification to clipboard", flush=True)
+            except Exception as e:
+                print(f"[copy] failed: {e}", flush=True)
+
+        def on_feedback(self, _w) -> None:
+            # 直接打开 GitHub 新建 issue 的页面，并预填版本/状态/环境信息
+            import urllib.parse
+            body = (self.L("<!-- 请描述你遇到的问题 -->", "<!-- Please describe the issue -->")
+                    + "\n\n\n---\n" + self._diag_text())
+            url = (f"{REPO_URL}/issues/new?title="
+                   + urllib.parse.quote("Feedback: ")
+                   + "&body=" + urllib.parse.quote(body))
+            try:
+                subprocess.Popen(["xdg-open", url])
+            except Exception as e:
+                print(f"[feedback] failed: {e}", flush=True)
 
         def on_check_update(self, _w) -> None:
             def worker():
@@ -1065,8 +1215,8 @@ def build_app():
                 newer = remote_is_newer(remote)
                 if newer:
                     title = self.L("发现新版本", "Update available")
-                    body = self.L(f"v{__version__} → v{remote}\n菜单点 Update now 一键更新",
-                                  f"v{__version__} → v{remote}\nClick Update now in the menu")
+                    body = self.L(f"v{__version__} → v{remote}\n点下方「一键更新」即可",
+                                  f"v{__version__} → v{remote}\nClick “Update now” below")
 
                     def announce():
                         # set_update 与 _notified_update 都在主线程内、同一回调里设置，
@@ -1189,9 +1339,6 @@ def build_app():
             self._notify(self.L("通知语言：中文", "Notification language: English"),
                          self.L("以后通知用中文显示。", "Notifications will now be in English."), kind="info")
 
-        def on_quit(self, _w) -> None:
-            Gtk.main_quit()
-
     return ClaudeIndicatorApp, Gtk
 
 
@@ -1201,7 +1348,7 @@ def run_gui() -> None:
     poller = Poller(app)
     app.poller = poller
     poller.start()
-    print(f"[poller] running v{__version__}, fast={POLL_FAST_S}s slow={POLL_SLOW_S}s", flush=True)
+    print(f"[poller] running v{DISPLAY_VERSION}, fast={POLL_FAST_S}s slow={POLL_SLOW_S}s", flush=True)
     Gtk.main()
 
 
