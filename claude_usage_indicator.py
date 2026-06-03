@@ -1029,6 +1029,15 @@ def build_app():
             except Exception as exc:
                 print(f"[notify] notify-send failed: {exc}", flush=True)
 
+        def _close_notif(self, kind: str) -> None:
+            """主动关掉某一类的常驻通知（如点 Update now 后让「发现新版本」立刻消失）。"""
+            n = self._notifs.pop(kind, None)
+            if n is not None:
+                try:
+                    n.close()
+                except Exception:
+                    pass
+
         def _notify_status(self, d: UsageData) -> None:
             pair = NOTIFY_MSG.get(d.status)
             if pair:
@@ -1081,6 +1090,9 @@ def build_app():
             threading.Thread(target=worker, daemon=True).start()
 
         def on_update_now(self, _w) -> None:
+            # 点了 Update now：先让那条常驻的「发现新版本」立刻消失，再弹「正在更新…」
+            # （正在更新用 info：~4s 自动收起，本进程稍后被重启杀掉也不会残留一条常驻通知）
+            self._close_notif("update")
             # 在独立的 systemd 瞬时单元里跑自更新，这样它重启本服务时不会把更新进程一起杀掉
             here = Path(__file__).resolve().parent
             py = str(here / "venv" / "bin" / "python")
