@@ -982,7 +982,7 @@ def build_app():
             _sub("Refresh now", self.on_refresh_now)
             self.action_update = _sub("Update now", self.on_update_now)
             _sub("Check for updates", self.on_check_update)
-            _sub("Open claude usage page", self.on_open_page)
+            _sub("Open Claude Usage page", self.on_open_page)
             _sub("Send feedback / report issue", self.on_feedback)
             self.action_lang = _sub(self._lang_label(), self.on_toggle_lang)
             _sub(f"About (GitHub)  v{DISPLAY_VERSION}", self.on_about)
@@ -1021,9 +1021,10 @@ def build_app():
             return item
 
         def _set_metric(self, name_item, bar_item, name, util, pct_str,
-                        reset_dt, countdown=False, visible=True) -> None:
-            """两行：名称 + reset（reset 跟在标题后；标题补到等宽尽量对齐）/ 进度条+%。
-            注意：比例字体下，越长的标题(如 Current session)其 reset 会略偏右，补空格补不平。"""
+                        reset_dt, countdown=False, sub_limit=False) -> None:
+            """两行：名称 + reset / 进度条+%。
+            sub_limit=True（Sonnet/Opus 子限额）：未启用（无 reset 且无用量）时整行隐藏，用了才出现。"""
+            visible = (not sub_limit) or (reset_dt is not None) or (util not in (None, 0, 0.0))
             name_item.set_visible(visible)
             bar_item.set_visible(visible)
             if not visible:
@@ -1060,9 +1061,9 @@ def build_app():
             self._set_metric(self.item_all_name, self.item_all_bar, "All models",
                              d.seven_day_util, d.all_models_used, d.seven_day_reset)
             self._set_metric(self.item_sonnet_name, self.item_sonnet_bar, "Sonnet only",
-                             d.sonnet_util, d.sonnet_used, d.sonnet_reset)
+                             d.sonnet_util, d.sonnet_used, d.sonnet_reset, sub_limit=True)
             self._set_metric(self.item_opus_name, self.item_opus_bar, "Opus only",
-                             d.opus_util, d.opus_used, d.opus_reset, visible=(d.opus_used != "--"))
+                             d.opus_util, d.opus_used, d.opus_reset, sub_limit=True)
             status_text = UsageData.STATUS_LABEL.get(d.status, d.status)
             bad = d.status not in ("ok", "init")
             if bad:
@@ -1101,26 +1102,28 @@ def build_app():
             self._notif_text[kind] = (title, body)   # 供「Copy」按钮复制当前这条通知的内容
             if have_notify:
                 try:
-                    # 同一类别复用同一条通知：已存在就原地 update（守护进程按同 id 刷新、不堆叠新横幅），
-                    # 否则新建并挂动作。引用存进 self._notifs，避免被 GC 致动作回调失效。
-                    # 动作：每种通知都带「Copy」(复制本条内容)；再按类型加主操作。
+                    # 同一类别复用同一条通知：已存在就原地 update（守护进程按同 id 刷新、不堆叠新横幅）。
+                    # 引用存进 self._notifs，避免被 GC 致动作回调失效。
                     n = self._notifs.get(kind)
                     if n is None:
                         n = Notify.Notification.new(title, body, icon)
-                        try:
-                            if kind == "update":      # 发现新版本：一键更新
-                                n.add_action("update", self.L("一键更新", "Update now"),
-                                             lambda *a: self.on_update_now(None), None)
-                            else:                      # 故障 / 普通信息：打开用量页
-                                n.add_action("open", self.L("打开用量页", "Open usage page"),
-                                             lambda *a: self.on_open_page(None), None)
-                            n.add_action("copy", self.L("复制信息", "Copy"),   # 所有类型都能复制
-                                         lambda *a, k=kind: self._copy_notif(k), None)
-                        except Exception:
-                            pass
                         self._notifs[kind] = n
                     else:
                         n.update(title, body, icon)
+                    # 按钮每次都按「当前语言」重建（切换语言后按钮也跟着变）。
+                    # 每种通知都带「Copy」；update 带「一键更新」，其余带「打开 Claude Usage 页面」。
+                    try:
+                        n.clear_actions()
+                        if kind == "update":
+                            n.add_action("update", self.L("一键更新", "Update now"),
+                                         lambda *a: self.on_update_now(None), None)
+                        else:
+                            n.add_action("open", self.L("打开 Claude Usage 页面", "Open Claude Usage page"),
+                                         lambda *a: self.on_open_page(None), None)
+                        n.add_action("copy", self.L("复制信息", "Copy"),
+                                     lambda *a, k=kind: self._copy_notif(k), None)
+                    except Exception:
+                        pass
                     n.set_urgency(Notify.Urgency.CRITICAL if urgent else Notify.Urgency.NORMAL)
                     n.set_timeout(0 if urgent else 12000)  # 0 = 永不自动消失（直到用户关闭）
                     n.show()
