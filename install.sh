@@ -45,93 +45,112 @@ if [ "$INTERACTIVE" = 1 ]; then
 fi
 
 # ---- 输出助手（双语；msg 支持 printf 占位符）----
-log() { printf '\033[1;34m[install]\033[0m %s\n' "$*"; }
-err() { printf '\033[1;31m[install]\033[0m %s\n' "$*" >&2; }
-warn(){ printf '\033[1;33m[install]\033[0m %s\n' "$*"; }
+# 颜色：仅当 stdout 是终端时上色（管道 / 重定向 / CI 里不污染输出，避免出现裸 ESC 码）。
+if [ -t 1 ]; then _G=$'\033[32m'; _Y=$'\033[33m'; _R=$'\033[31m'; _D=$'\033[90m'; _C=$'\033[36m'; _N=$'\033[0m'
+else _G=''; _Y=''; _R=''; _D=''; _C=''; _N=''; fi
+log() { printf '%s[install]%s %s\n' "$_C" "$_N" "$*"; }
+err() { printf '%s[install]%s %s\n' "$_R" "$_N" "$*" >&2; }
+warn(){ printf '%s[install]%s %s\n' "$_Y" "$_N" "$*"; }
 msg() { local z="$1" e="$2"; shift 2; if [ "$LC" = zh ]; then printf "$z\n" "$@"; else printf "$e\n" "$@"; fi; }
 
-# 跑「噪声命令」：把输出写进日志、成功时静默；失败才把日志吐出来。stdin 接 /dev/null（避免 curl|bash 截断）。
+# 每个大步拆成若干「小步」逐条展示。小步的输出写进日志，成功只留一行 ✓，失败才把日志吐出来。
 _qlog="$(mktemp 2>/dev/null || echo "/tmp/cui-install.$$.log")"
 trap 'rm -f "$_qlog"' EXIT
-run()  { "$@" </dev/null >"$_qlog" 2>&1; }
-dump() { sed 's/^/      /' "$_qlog" >&2; }
+dump() { sed 's/^/        /' "$_qlog" >&2; }   # 失败日志，缩进到小步符号之下
 
-# 进度条 + 转圈：长步骤运行时显示 [████░░░] N% ⠹ label，完成→✓ / 失败→✗ 并吐日志。
-TOTAL=5
-barstr() {  # barstr <步号> -> "[████░░░░] 40%"
-  local n="$1" w=16 i s='' f=$(( n * 16 / TOTAL ))
-  for (( i = 0; i < w; i++ )); do if [ "$i" -lt "$f" ]; then s="$s█"; else s="$s░"; fi; done
-  printf '[%s] %3d%%' "$s" "$(( n * 100 / TOTAL ))"
+# 即时结果行（无命令）：✓ 成功 / · 跳过或提示 / ⚠ 非致命警告 / ✗ 失败
+ok()   { printf '    %s✓%s %s\n' "$_G" "$_N" "$1"; }
+skip() { printf '    %s·%s %s\n' "$_D" "$_N" "$1"; }
+bad()  { printf '    %s⚠%s %s\n' "$_Y" "$_N" "$1"; }
+fail() { printf '    %s✗%s %s\n' "$_R" "$_N" "$1" >&2; }
+
+# 转圈：运行时在原地显示「⠹ 正在做什么 …」，直到后台 pid 结束；返回该命令的退出码。
+# 非交互（无 /dev/tty）时不画动画，直接等。stdin 一律接 /dev/null（避免 curl|bash 把剩余脚本喂给子进程）。
+_spin() {  # _spin <pid> <label>
+  local pid="$1" label="$2" fr=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0
+  [ "$INTERACTIVE" = 1 ] || { wait "$pid"; return $?; }
+  while kill -0 "$pid" 2>/dev/null; do
+    printf '\r    %s%s%s %s … ' "$_C" "${fr[i % 10]}" "$_N" "$label" >/dev/tty 2>/dev/null || true
+    sleep 0.1; i=$(( i + 1 ))
+  done
+  printf '\r\033[K' >/dev/tty 2>/dev/null || true
+  wait "$pid"
 }
-step() {  # step <步号> <label> <cmd...>：静默跑 + 转圈进度条；返回命令 rc，失败吐日志
-  local n="$1" label="$2"; shift 2
+step()  {  # 致命小步：成功 ✓；失败 ✗ + 吐日志，返回 1（调用方决定是否退出）
+  local label="$1"; shift
   "$@" </dev/null >"$_qlog" 2>&1 &
-  local pid=$! fr=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0
-  if [ "$INTERACTIVE" = 1 ]; then
-    while kill -0 "$pid" 2>/dev/null; do
-      printf '\r  %s %s %s ' "$(barstr "$n")" "${fr[i % 10]}" "$label" >/dev/tty 2>/dev/null || true
-      sleep 0.12; i=$(( i + 1 ))
-    done
-    printf '\r\033[K' >/dev/tty 2>/dev/null || true   # 清掉转圈行
-  fi
-  if wait "$pid"; then printf '  %s ✓ %s\n' "$(barstr "$n")" "$label"; return 0; fi
-  printf '  %s ✗ %s\n' "$(barstr "$n")" "$label" >&2; dump; return 1
+  if _spin "$!" "$label"; then ok "$label"; return 0; fi
+  fail "$label"; dump; return 1
+}
+stepw() {  # 不致命小步（如 apt update）：成功 ✓；失败只 ⚠，不吐日志、不退出
+  local label="$1"; shift
+  "$@" </dev/null >"$_qlog" 2>&1 &
+  if _spin "$!" "$label"; then ok "$label"; else bad "$label$(msg '（有警告，已跳过）' ' (warned, skipped)')"; fi
+  return 0
 }
 
-# ================= 0. 环境检查（无 apt 硬退出；其余只警告）=================
+# ================= 【1/5】环境检查（无 apt 硬退出；其余只警告）=================
 msg "【1/5】检查环境…" "[1/5] Checking environment…"
 
 if ! command -v apt-get >/dev/null 2>&1; then
-  msg "✗ 没找到 apt：本安装脚本仅支持 Debian/Ubuntu 系。其他发行版请手动装依赖后用 run.sh 运行。" \
-      "✗ apt not found: this installer supports Debian/Ubuntu only. On other distros install the deps manually and use run.sh." >&2
+  fail "$(msg '没找到 apt：本脚本仅支持 Debian/Ubuntu。其他发行版请手动装依赖后用 run.sh 运行。' 'apt not found: this installer supports Debian/Ubuntu only. On other distros install the deps manually and use run.sh.')"
   exit 1
 fi
+ok "$(msg '包管理器：apt（Debian/Ubuntu）' 'package manager: apt (Debian/Ubuntu)')"
 
 DISTRO="$( . /etc/os-release 2>/dev/null && echo "${ID:-?} ${VERSION_ID:-}" )"
-msg "  发行版：%s" "  Distro: %s" "$DISTRO"
 case " $DISTRO " in
-  *" ubuntu "*|*" debian "*|*" linuxmint "*|*" pop "*|*" elementary "*|*" zorin "*|*" neon "*) ;;
-  *) msg "  ⚠ 非主流 Debian/Ubuntu 衍生版——多半也能装，失败的话请手动装依赖。" \
-         "  ⚠ Not a mainstream Debian/Ubuntu derivative — likely fine, but install deps manually if it fails." ;;
+  *" ubuntu "*|*" debian "*|*" linuxmint "*|*" pop "*|*" elementary "*|*" zorin "*|*" neon "*)
+    ok "$(msg '发行版：%s' 'distro: %s' "$DISTRO")" ;;
+  *) bad "$(msg '发行版：%s（非主流衍生版，多半也能装，失败的话请手动装依赖）' 'distro: %s (uncommon derivative — likely fine; install deps manually if it fails)' "$DISTRO")" ;;
 esac
 
-if [ -z "${DISPLAY:-}" ] && [ -z "${WAYLAND_DISPLAY:-}" ]; then
-  msg "  ⚠ 当前没有图形会话（DISPLAY/WAYLAND 为空，像是 SSH/headless）：托盘图标只在桌面会话出现；服务仍会跑，可用 --once/--doctor 验证。" \
-      "  ⚠ No graphical session (DISPLAY/WAYLAND empty — looks like SSH/headless): the tray icon only shows in a desktop session; the service still runs, verify with --once/--doctor."
-fi
-if printf '%s' "${XDG_CURRENT_DESKTOP:-}" | grep -qi gnome; then
-  msg "  · GNOME 桌面：托盘图标需 AppIndicator 扩展（Ubuntu 通常已默认启用），收尾会再提示。" \
-      "  · GNOME desktop: the tray needs the AppIndicator extension (usually on by default in Ubuntu); reminder at the end."
-fi
-if ! command -v sudo >/dev/null 2>&1 && [ "$(id -u)" != 0 ]; then
-  msg "  ⚠ 没有 sudo 且非 root：安装系统依赖那一步可能失败。" \
-      "  ⚠ No sudo and not root: installing system dependencies may fail."
-fi
-if [ "$INTERACTIVE" != 1 ]; then
-  msg "  · 非交互环境（无 /dev/tty）：跳过提问，用默认值继续。" \
-      "  · Non-interactive (no /dev/tty): skipping prompts, using defaults."
+if [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
+  ok "$(msg '图形会话：已检测到' 'graphical session: detected')"
+else
+  bad "$(msg '图形会话：无（DISPLAY/WAYLAND 为空，像 SSH/headless）——托盘只在桌面会话显示，服务仍会跑' 'no graphical session (looks like SSH/headless) — the tray only shows in a desktop session; the service still runs')"
 fi
 
-# ================= 1. 系统依赖（sudo）=================
+if command -v sudo >/dev/null 2>&1 || [ "$(id -u)" = 0 ]; then
+  ok "$(msg 'sudo：可用' 'sudo: available')"
+else
+  bad "$(msg 'sudo：无且非 root——装系统依赖那步可能失败' 'no sudo and not root — installing system deps may fail')"
+fi
+
+if printf '%s' "${XDG_CURRENT_DESKTOP:-}" | grep -qi gnome; then
+  skip "$(msg 'GNOME 桌面：托盘需 AppIndicator 扩展（Ubuntu 通常已默认启用），收尾会再提示' 'GNOME desktop: the tray needs the AppIndicator extension (usually on by default in Ubuntu); reminder at the end')"
+fi
+[ "$INTERACTIVE" = 1 ] || skip "$(msg '非交互环境（无 /dev/tty）：跳过提问，用默认值继续' 'non-interactive (no /dev/tty): skipping prompts, using defaults')"
+
+# ================= 【2/5】系统依赖（sudo）=================
 # 说明：扫描登录态需要先把 Python 依赖装好，所以「装依赖」必须在「验证登录」之前；
 # 真正会让程序常驻运行的「激活服务」放在登录验证通过之后。
 msg "【2/5】安装系统依赖（需要 sudo 授权）…" "[2/5] Installing system dependencies (sudo required)…"
 export DEBIAN_FRONTEND=noninteractive
+
 # 先触发一次 sudo 密码提示（可见）；之后 apt 静默运行就不会把密码提示藏进日志。
-sudo -v || { err "$(msg '需要 sudo 权限来安装系统依赖。' 'sudo is required to install system dependencies.')"; exit 1; }
-# apt 走 run()：stdin 接 /dev/null（否则 curl|bash 时 apt/debconf 吞掉管道里剩余脚本导致截断），输出进日志。
-run sudo apt-get update -y || warn "$(msg 'apt 更新有警告（可能是无关第三方源），已跳过。' 'apt update warned (likely an unrelated 3rd-party repo); skipped.')"
+sudo -v || { fail "$(msg '需要 sudo 权限来安装系统依赖。' 'sudo is required to install system dependencies.')"; exit 1; }
+ok "$(msg '已获得 sudo 授权' 'sudo authorized')"
+
+# apt 命令一律由 step/stepw 经 </dev/null 运行（否则 curl|bash 时 apt/debconf 会吞掉管道里剩余脚本导致截断）。
+_apt_update(){ sudo apt-get update -y; }
+stepw "$(msg '更新软件源' 'update package lists')" _apt_update
+
 # AppIndicator GIR 包名因发行版而异：老的 vs 新的 Ayatana fork，二者都提供所需 typelib。
 IND_PKG="gir1.2-appindicator3-0.1"
 apt-cache show "$IND_PKG" >/dev/null 2>&1 || IND_PKG="gir1.2-ayatanaappindicator3-0.1"
-step 2 "$(msg '安装依赖包' 'installing packages')" sudo -E apt-get install -y \
-      build-essential python3 python3-venv python3-dev \
-      python3-gi gir1.2-gtk-3.0 "$IND_PKG" gir1.2-notify-0.7 \
-      libgirepository1.0-dev libcairo2-dev pkg-config \
-      libnotify-bin xdg-utils git curl \
-  || { err "$(msg '系统依赖安装失败（详见上方日志）。' 'failed to install system dependencies (see log above).')"; exit 1; }
 
-# ================= 2. 拉取代码 + venv + 命令（准备，尚未激活服务）=================
+# 分组安装：每组一行小步，便于看清进度（apt 会跳过已装的，重复运行很快）。
+_apt(){ sudo -E apt-get install -y "$@"; }
+_apt_fail(){ err "$(msg '系统依赖安装失败（详见上方日志）。' 'failed to install system dependencies (see log above).')"; exit 1; }
+step "$(msg '编译工具与开发库' 'build tools & dev libraries')" \
+     _apt build-essential python3 python3-venv python3-dev libgirepository1.0-dev libcairo2-dev pkg-config || _apt_fail
+step "$(msg 'GTK / 托盘 / 通知 组件' 'GTK / tray / notification components')" \
+     _apt python3-gi gir1.2-gtk-3.0 "$IND_PKG" gir1.2-notify-0.7 libnotify-bin || _apt_fail
+step "$(msg '辅助工具（git / curl / xdg-utils）' 'helper tools (git / curl / xdg-utils)')" \
+     _apt xdg-utils git curl || _apt_fail
+
+# ================= 【3/5】拉取代码 + venv + 命令（准备，尚未激活服务）=================
 msg "【3/5】部署最新版 + 建虚拟环境…" "[3/5] Deploying latest version + building venv…"
 mkdir -p "$INSTALL_DIR"
 
@@ -154,35 +173,48 @@ clean_build(){ env -i \
   PYTHONNOUSERSITE=1 PIP_CONFIG_FILE=/dev/null PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_INPUT=1 PIP_NO_CACHE_DIR=1 \
   "$@"; }
 SYS_PY="/usr/bin/python3"; [ -x "$SYS_PY" ] || SYS_PY="$(command -v python3)"
+PIP="$INSTALL_DIR/venv/bin/pip"
 _build_venv(){ rm -rf "$INSTALL_DIR/venv"; clean_build "$SYS_PY" -m venv "$INSTALL_DIR/venv"; }
-_pip_install(){
-  clean_build "$INSTALL_DIR/venv/bin/pip" install -q --index-url https://pypi.org/simple --upgrade pip wheel
-  clean_build "$INSTALL_DIR/venv/bin/pip" install -q --index-url https://pypi.org/simple -r "$INSTALL_DIR/requirements.txt"
-}
-_gi_ok(){ clean_build "$PY" -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk, GLib" >/dev/null 2>&1; }
+_pip_upgrade(){ clean_build "$PIP" install -q --index-url https://pypi.org/simple --upgrade pip wheel; }
+_pip_reqs(){ clean_build "$PIP" install -q --index-url https://pypi.org/simple -r "$INSTALL_DIR/requirements.txt"; }
+_pip_all(){ _pip_upgrade && _pip_reqs; }
+_gi_check(){ clean_build "$PY" -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk, GLib"; }
+_gi_ok(){ _gi_check >/dev/null 2>&1; }
 
-# 建/修 venv + 装依赖，最后用 import gi 验真（返回 0 即可用）。
-# 重建条件：venv 缺失 / python 失效 / 不是用系统 Python 建的（conda/pyenv）；装完仍加载不了就用系统 Python 重建一次。
-build_deps() {
-  need_build=0
-  [ -d "$INSTALL_DIR/venv" ] && "$PY" -c 'pass' >/dev/null 2>&1 || need_build=1
-  if [ "$need_build" = 0 ]; then
-    bp="$("$PY" -c 'import sys; print(sys.base_prefix)' 2>/dev/null || echo '')"
-    case "$bp" in /usr|/usr/*) : ;; *) need_build=1 ;; esac
-  fi
-  [ "$need_build" = 1 ] && _build_venv
-  _pip_install
-  _gi_ok || { _build_venv; _pip_install; }
-  _gi_ok
-}
-
-step 3 "$(msg '拉取最新代码' 'fetching latest code')" _deploy \
+step "$(msg '拉取最新代码' 'fetch latest code')" _deploy \
   || { err "$(msg '拉取代码失败（详见上方日志）。' 'failed to fetch the code (see log above).')"; exit 1; }
-step 3 "$(msg '建虚拟环境 + 装 Python 依赖' 'building venv + installing Python deps')" build_deps \
-  || { err "$(msg 'PyGObject 加载失败：请勿在 conda 环境内安装（先 conda deactivate 再重试），详见上方日志。' 'PyGObject failed to load: do not run inside a conda env (conda deactivate and retry); see log above.')"; exit 1; }
-msg "    → v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?')" "    → v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?')"
-chmod +x "$INSTALL_DIR/run.sh"
+skip "$(msg '版本 v%s' 'version v%s' "$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?')")"
 
+# venv：缺失 / python 失效（小版本升级后 symlink 悬空）/ 不是系统 Python 建的（conda/pyenv）→ 重建；否则复用。
+need_build=0
+[ -d "$INSTALL_DIR/venv" ] && "$PY" -c 'pass' >/dev/null 2>&1 || need_build=1
+if [ "$need_build" = 0 ]; then
+  bp="$("$PY" -c 'import sys; print(sys.base_prefix)' 2>/dev/null || echo '')"
+  case "$bp" in /usr|/usr/*) : ;; *) need_build=1 ;; esac
+fi
+if [ "$need_build" = 1 ]; then
+  step "$(msg '创建虚拟环境（系统 Python）' 'create virtualenv (system Python)')" _build_venv \
+    || { err "$(msg '创建虚拟环境失败（详见上方日志）。' 'failed to create the virtualenv (see log above).')"; exit 1; }
+else
+  skip "$(msg '复用已有虚拟环境' 'reuse existing virtualenv')"
+fi
+step "$(msg '升级 pip / wheel' 'upgrade pip / wheel')" _pip_upgrade \
+  || { err "$(msg 'pip 升级失败（详见上方日志）。' 'pip upgrade failed (see log above).')"; exit 1; }
+step "$(msg '安装 Python 依赖（curl_cffi / browser_cookie3 / PyGObject）' 'install Python deps (curl_cffi / browser_cookie3 / PyGObject)')" _pip_reqs \
+  || { err "$(msg 'Python 依赖安装失败（详见上方日志）。' 'failed to install Python deps (see log above).')"; exit 1; }
+
+# 验证 PyGObject 能加载；不行就用系统 Python 重建一次（兜底：老 venv 是 conda 的 Python 建的）。
+if ! _gi_ok; then
+  bad "$(msg 'GTK 组件加载失败，改用系统 Python 重建…' 'GTK failed to load — rebuilding with system Python…')"
+  step "$(msg '重建虚拟环境' 'rebuild virtualenv')" _build_venv \
+    || { err "$(msg '重建失败（详见上方日志）。' 'rebuild failed (see log above).')"; exit 1; }
+  step "$(msg '重新安装 Python 依赖' 'reinstall Python deps')" _pip_all \
+    || { err "$(msg '重新安装失败（详见上方日志）。' 'reinstall failed (see log above).')"; exit 1; }
+fi
+step "$(msg '验证 GTK 组件可加载' 'verify GTK components load')" _gi_check \
+  || { err "$(msg 'PyGObject 仍无法加载：请勿在 conda 环境内安装（先 conda deactivate 再重试）。' 'PyGObject still fails to load: do not run inside a conda env (conda deactivate and retry).')"; exit 1; }
+
+chmod +x "$INSTALL_DIR/run.sh"
 # 命令包装器：统一走 run.sh（同一套环境隔离），用户手动 `claude-usage-indicator …` 也不受其 shell 定制影响
 mkdir -p "$BIN_DIR"
 cat > "$BIN_DIR/$APP" <<EOF
@@ -190,6 +222,7 @@ cat > "$BIN_DIR/$APP" <<EOF
 exec "$INSTALL_DIR/run.sh" "\$@"
 EOF
 chmod +x "$BIN_DIR/$APP"
+ok "$(msg '安装命令 claude-usage-indicator' 'installed command: claude-usage-indicator')"
 
 # ================= 3. 登录验证（激活前的关卡）=================
 msg "【4/5】验证 claude.ai 登录态（激活服务前）…" "[4/5] Verifying your claude.ai login (before activating)…"
@@ -251,21 +284,24 @@ if [ "$GATE" = 3 ]; then
   exit 0
 fi
 
-# ================= 4. 激活 systemd 用户服务 =================
+# ================= 【5/5】激活 systemd 用户服务 =================
 msg "【5/5】激活后台服务…" "[5/5] Activating the background service…"
 mkdir -p "$SERVICE_DIR"
 sed "s|__INSTALL_DIR__|$INSTALL_DIR|g" "$INSTALL_DIR/packaging/${APP}.service" > "$SERVICE"
+ok "$(msg '写入 systemd 服务文件' 'wrote the systemd service file')"
 # 没有用户级 systemd 会话（SSH/headless）时不要因 set -e 整体失败：降级为提示
 if systemctl --user daemon-reload 2>/dev/null; then
-  systemctl --user enable "$APP.service" >/dev/null 2>&1 || true
-  if systemctl --user restart "$APP.service" >/dev/null 2>&1; then
-    msg "  ✓ 后台服务已启动" "  ✓ background service started"
+  ok "$(msg '重载 systemd 配置' 'reloaded systemd')"
+  if systemctl --user enable "$APP.service" >/dev/null 2>&1; then
+    ok "$(msg '设置开机自启' 'enabled on login')"
   else
-    warn "$(msg '服务未能启动，稍后可手动：systemctl --user restart '"$APP"'.service' 'Service failed to start; later run: systemctl --user restart '"$APP"'.service')"
+    bad "$(msg '设置开机自启失败（不影响本次运行）' 'could not enable on login (does not affect this run)')"
   fi
+  _restart(){ systemctl --user restart "$APP.service"; }
+  step "$(msg '启动后台服务' 'start the background service')" _restart \
+    || bad "$(msg '服务未能启动，稍后可手动：systemctl --user restart '"$APP"'.service' 'service failed to start; later run: systemctl --user restart '"$APP"'.service')"
 else
-  msg "未检测到用户级 systemd 会话（SSH/headless？）。文件已装好，登录图形会话后运行：\n    systemctl --user enable --now %s.service" \
-      "No user systemd session detected (SSH/headless?). Files are installed; in a desktop session run:\n    systemctl --user enable --now %s.service" "$APP"
+  skip "$(msg '未检测到用户级 systemd 会话（SSH/headless）——文件已装好；进入桌面会话后运行：systemctl --user enable --now '"$APP"'.service' 'no user systemd session (SSH/headless) — files installed; in a desktop session run: systemctl --user enable --now '"$APP"'.service')"
 fi
 
 # ================= 5. 收尾 =================
