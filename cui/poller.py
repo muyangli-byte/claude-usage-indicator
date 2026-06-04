@@ -60,6 +60,8 @@ class Poller(threading.Thread):
                 return "ok", "", fetch_usage(sk, org)
             except AuthError as e:
                 return "auth", str(e), None
+            except CookieError as e:   # 重读 cookie 时钥匙环锁了：是「读不到登录态」，不是网络问题
+                return "cookie", str(e), None
             except CloudflareError as e:
                 return "cloudflare", str(e), None
             except SchemaError as e:

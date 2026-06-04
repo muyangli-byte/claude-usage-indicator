@@ -31,19 +31,48 @@ def _valid_org(o) -> bool:
     return bool(o) and bool(ORG_RE.match(o))
 
 
-# 每个浏览器：所有 profile 的 cookie 路径 glob（含新版 Network/ 子目录）+ KWallet 产品名
+# 每个浏览器：cookie 库的「基目录」glob + KWallet 产品名。每个基目录下会同时尝试
+# <profile>/Cookies 与 <profile>/Network/Cookies（新版 Chromium 把 cookie 挪到了 Network/ 子目录）。
+# 基目录覆盖：原生 ~/.config、Snap（~/snap/.../common/...，Ubuntu 默认的 Chromium 就在这）、Flatpak（~/.var/app/...）。
 _BROWSERS_INFO = {
-    "chrome":   {"globs": ["~/.config/google-chrome/*/Cookies", "~/.config/google-chrome/*/Network/Cookies"], "kw": "Chrome"},
-    "chromium": {"globs": ["~/.config/chromium/*/Cookies", "~/.config/chromium/*/Network/Cookies"], "kw": "Chromium"},
-    "brave":    {"globs": ["~/.config/BraveSoftware/Brave-Browser/*/Cookies", "~/.config/BraveSoftware/Brave-Browser/*/Network/Cookies"], "kw": "Brave"},  # noqa: E501
-    "edge":     {"globs": ["~/.config/microsoft-edge/*/Cookies", "~/.config/microsoft-edge/*/Network/Cookies"], "kw": "Microsoft Edge"},
+    "chrome": {
+        "bases": [
+            "~/.config/google-chrome",
+            "~/.var/app/com.google.Chrome/config/google-chrome",
+        ],
+        "kw": "Chrome",
+    },
+    "chromium": {
+        "bases": [
+            "~/.config/chromium",
+            "~/snap/chromium/common/chromium",
+            "~/.var/app/org.chromium.Chromium/config/chromium",
+        ],
+        "kw": "Chromium",
+    },
+    "brave": {
+        "bases": [
+            "~/.config/BraveSoftware/Brave-Browser",
+            "~/snap/brave/common/.config/BraveSoftware/Brave-Browser",
+            "~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser",
+        ],
+        "kw": "Brave",
+    },
+    "edge": {
+        "bases": [
+            "~/.config/microsoft-edge",
+            "~/.var/app/com.microsoft.Edge/config/microsoft-edge",
+        ],
+        "kw": "Microsoft Edge",
+    },
 }
 
 
 def _profile_cookie_files(name: str) -> list:
     out = []
-    for pat in _BROWSERS_INFO.get(name, {}).get("globs", []):
-        out += sorted(glob.glob(os.path.expanduser(pat)))
+    for base in _BROWSERS_INFO.get(name, {}).get("bases", []):
+        for sub in ("*/Cookies", "*/Network/Cookies"):
+            out += sorted(glob.glob(os.path.expanduser(f"{base}/{sub}")))
     return out
 
 

@@ -3,3 +3,7 @@ curl_cffi>=0.9,<1.0      # 伪装 Chrome TLS 指纹，过 Cloudflare
 browser_cookie3>=0.20    # 从 Chrome 自动读取 sessionKey
 PyGObject>=3.42,<3.52    # GTK/AppIndicator 顶栏；<3.52 保持用 girepository-1.0，避免 fresh 机器源码构建失败
 pycairo>=1.20,<2.0       # PyGObject 依赖
+# 以下两个是 KDE/KWallet 回退路径（credentials.py 手动解密 cookie）直接 import 的，
+# 历史上靠 browser_cookie3 传递依赖带进来；显式声明，避免 bc3 改动后 KWallet 解密静默失效。
+pycryptodomex>=3.20      # Cryptodome：AES-CBC + PBKDF2 解密 Chromium cookie（KDE 回退）
+jeepney>=0.8             # 阻塞式 D-Bus：非交互读 KWallet 的 Safe Storage 密钥（KDE 回退）
