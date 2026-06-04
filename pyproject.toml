@@ -1,0 +1,9 @@
+# ruff 配置：目标 Python 3.8（与运行环境/旧 GNOME 机器一致），行宽 140。
+# 选 E/F/W：F=pyflakes（未用 import、未定义名等真 bug），E/W=pycodestyle。
+# 长双语 UI 文案/路径用 # noqa: E501 单行豁免，不强行折行伤可读性。
+[tool.ruff]
+target-version = "py38"
+line-length = 140
+
+[tool.ruff.lint]
+select = ["E", "F", "W"]

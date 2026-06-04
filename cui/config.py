@@ -111,8 +111,8 @@ NOTIFY_MSG = {
         "en": ("API schema changed", "The usage API changed; the tool needs an update. Raw response saved to the diagnostics dir."),
     },
     "cookie": {
-        "zh": ("读不到登录态", "已扫描所有浏览器 profile 仍读不到（钥匙环可能锁着）。可解锁钥匙环，或在 config.json 填 session_key+org_id。详见 README。"),
-        "en": ("Can't read login", "Scanned all browser profiles but found no valid sessionKey (keyring may be locked). Unlock your keyring, or set session_key+org_id in config.json. See README."),
+        "zh": ("读不到登录态", "已扫描所有浏览器 profile 仍读不到（钥匙环可能锁着）。可解锁钥匙环，或在 config.json 填 session_key+org_id。详见 README。"),  # noqa: E501
+        "en": ("Can't read login", "Scanned all browser profiles but found no valid sessionKey (keyring may be locked). Unlock your keyring, or set session_key+org_id in config.json. See README."),  # noqa: E501
     },
     "network": {
         "zh": ("网络错误", "稍后会自动重试。"),

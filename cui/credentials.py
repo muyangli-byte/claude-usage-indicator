@@ -35,7 +35,7 @@ def _valid_org(o) -> bool:
 _BROWSERS_INFO = {
     "chrome":   {"globs": ["~/.config/google-chrome/*/Cookies", "~/.config/google-chrome/*/Network/Cookies"], "kw": "Chrome"},
     "chromium": {"globs": ["~/.config/chromium/*/Cookies", "~/.config/chromium/*/Network/Cookies"], "kw": "Chromium"},
-    "brave":    {"globs": ["~/.config/BraveSoftware/Brave-Browser/*/Cookies", "~/.config/BraveSoftware/Brave-Browser/*/Network/Cookies"], "kw": "Brave"},
+    "brave":    {"globs": ["~/.config/BraveSoftware/Brave-Browser/*/Cookies", "~/.config/BraveSoftware/Brave-Browser/*/Network/Cookies"], "kw": "Brave"},  # noqa: E501
     "edge":     {"globs": ["~/.config/microsoft-edge/*/Cookies", "~/.config/microsoft-edge/*/Network/Cookies"], "kw": "Microsoft Edge"},
 }
 
