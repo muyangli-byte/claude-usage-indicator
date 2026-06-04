@@ -49,6 +49,12 @@ err() { printf '\033[1;31m[install]\033[0m %s\n' "$*" >&2; }
 warn(){ printf '\033[1;33m[install]\033[0m %s\n' "$*"; }
 msg() { local z="$1" e="$2"; shift 2; if [ "$LC" = zh ]; then printf "$z\n" "$@"; else printf "$e\n" "$@"; fi; }
 
+# 跑「噪声命令」：把输出写进日志、成功时静默；失败才把日志吐出来。stdin 接 /dev/null（避免 curl|bash 截断）。
+_qlog="$(mktemp 2>/dev/null || echo "/tmp/cui-install.$$.log")"
+trap 'rm -f "$_qlog"' EXIT
+run()  { "$@" </dev/null >"$_qlog" 2>&1; }
+dump() { sed 's/^/      /' "$_qlog" >&2; }
+
 # ================= 0. 环境检查（无 apt 硬退出；其余只警告）=================
 msg "【1/5】检查环境…" "[1/5] Checking environment…"
 
@@ -87,44 +93,45 @@ fi
 # 说明：扫描登录态需要先把 Python 依赖装好，所以「装依赖」必须在「验证登录」之前；
 # 真正会让程序常驻运行的「激活服务」放在登录验证通过之后。
 msg "【2/5】安装系统依赖（需要 sudo 授权）…" "[2/5] Installing system dependencies (sudo required)…"
-# 关键：apt 命令 stdin 接 /dev/null —— 否则 curl|bash 时 apt/debconf 会吞掉管道里「剩余脚本」，
-# 导致安装在 apt 后被截断（clone/venv 全不执行却以退出码 0 结束）。
 export DEBIAN_FRONTEND=noninteractive
-sudo apt-get update -y </dev/null || warn "$(msg 'apt-get update 报错（可能是无关第三方源），跳过更新继续。' 'apt-get update failed (likely an unrelated 3rd-party repo), skipping update and continuing.')"
-# AppIndicator GIR 包名因发行版而异：老的 gir1.2-appindicator3-0.1 vs 新的 Ayatana fork，二者都提供所需 typelib。
+# 先触发一次 sudo 密码提示（可见）；之后 apt 静默运行就不会把密码提示藏进日志。
+sudo -v || { err "$(msg '需要 sudo 权限来安装系统依赖。' 'sudo is required to install system dependencies.')"; exit 1; }
+# apt 走 run()：stdin 接 /dev/null（否则 curl|bash 时 apt/debconf 吞掉管道里剩余脚本导致截断），输出进日志。
+run sudo apt-get update -y || warn "$(msg 'apt 更新有警告（可能是无关第三方源），已跳过。' 'apt update warned (likely an unrelated 3rd-party repo); skipped.')"
+# AppIndicator GIR 包名因发行版而异：老的 vs 新的 Ayatana fork，二者都提供所需 typelib。
 IND_PKG="gir1.2-appindicator3-0.1"
-if ! apt-cache show "$IND_PKG" >/dev/null 2>&1; then IND_PKG="gir1.2-ayatanaappindicator3-0.1"; fi
-log "AppIndicator: $IND_PKG"
-sudo -E apt-get install -y \
-  build-essential python3 python3-venv python3-dev \
-  python3-gi gir1.2-gtk-3.0 "$IND_PKG" gir1.2-notify-0.7 \
-  libgirepository1.0-dev libcairo2-dev pkg-config \
-  libnotify-bin xdg-utils git curl </dev/null
+apt-cache show "$IND_PKG" >/dev/null 2>&1 || IND_PKG="gir1.2-ayatanaappindicator3-0.1"
+if run sudo -E apt-get install -y \
+      build-essential python3 python3-venv python3-dev \
+      python3-gi gir1.2-gtk-3.0 "$IND_PKG" gir1.2-notify-0.7 \
+      libgirepository1.0-dev libcairo2-dev pkg-config \
+      libnotify-bin xdg-utils git curl; then
+  msg "  ✓ 系统依赖已就绪" "  ✓ system dependencies ready"
+else
+  err "$(msg '系统依赖安装失败，输出如下：' 'failed to install system dependencies; output below:')"; dump; exit 1
+fi
 
 # ================= 2. 拉取代码 + venv + 命令（准备，尚未激活服务）=================
 msg "【3/5】部署最新版 + 建虚拟环境…" "[3/5] Deploying latest version + building venv…"
 mkdir -p "$INSTALL_DIR"
-if [ -d "$INSTALL_DIR/.git" ]; then
-  git -C "$INSTALL_DIR" fetch --depth 1 origin main
-  git -C "$INSTALL_DIR" reset --hard origin/main   # reset 不依赖共同祖先，浅克隆安全
-else
-  if [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)" ]; then
-    backup="${INSTALL_DIR}.bak.$(date +%s)"
-    log "backup -> ${backup}"
-    mv "$INSTALL_DIR" "$backup"
+
+# 部署最新 main（已是 git 副本就 fetch+reset，浅克隆安全；否则备份非空目录后 clone）
+_deploy() {
+  if [ -d "$INSTALL_DIR/.git" ]; then
+    git -C "$INSTALL_DIR" fetch --depth 1 origin main && git -C "$INSTALL_DIR" reset --hard origin/main
+  else
+    [ -n "$(ls -A "$INSTALL_DIR" 2>/dev/null || true)" ] && mv "$INSTALL_DIR" "${INSTALL_DIR}.bak.$(date +%s)"
+    git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
   fi
-  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
-fi
+}
+
 # ── 与用户环境完全隔离 ──
 # 构建（建 venv / 装 pip 依赖 / 编译 PyGObject）一律在 env -i 清空后的「白名单」环境里跑，
 # 不受 conda/pyenv、自定义 PATH、PYTHONPATH/PYTHONHOME、PIP_* 与 ~/.config/pip/pip.conf（可能指向
 # 私有源）、LD_LIBRARY_PATH/LD_PRELOAD 等任何用户定制影响 → 所有人装出来的环境完全一致。
-# venv 必须用「系统」Python（/usr/bin/python3）；pip 锁定官方源、忽略用户 pip 配置、不用缓存。
 clean_build(){ env -i \
-  HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin \
-  LANG=C.UTF-8 LC_ALL=C.UTF-8 \
-  PYTHONNOUSERSITE=1 \
-  PIP_CONFIG_FILE=/dev/null PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_INPUT=1 PIP_NO_CACHE_DIR=1 \
+  HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin LANG=C.UTF-8 LC_ALL=C.UTF-8 \
+  PYTHONNOUSERSITE=1 PIP_CONFIG_FILE=/dev/null PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_INPUT=1 PIP_NO_CACHE_DIR=1 \
   "$@"; }
 SYS_PY="/usr/bin/python3"; [ -x "$SYS_PY" ] || SYS_PY="$(command -v python3)"
 _build_venv(){ rm -rf "$INSTALL_DIR/venv"; clean_build "$SYS_PY" -m venv "$INSTALL_DIR/venv"; }
@@ -132,27 +139,30 @@ _pip_install(){
   clean_build "$INSTALL_DIR/venv/bin/pip" install -q --index-url https://pypi.org/simple --upgrade pip wheel
   clean_build "$INSTALL_DIR/venv/bin/pip" install -q --index-url https://pypi.org/simple -r "$INSTALL_DIR/requirements.txt"
 }
-# import gi 冒烟自检也在隔离环境里跑（剔除 LD_LIBRARY_PATH 等），代表服务运行时的真实加载情况
 _gi_ok(){ clean_build "$PY" -c "import gi; gi.require_version('Gtk','3.0'); from gi.repository import Gtk, GLib" >/dev/null 2>&1; }
 
-# 重建条件：venv 缺失 / python 失效（小版本升级后 symlink 悬空）/ 不是用系统 Python 建的（如 conda）
-need_build=0
-[ -d "$INSTALL_DIR/venv" ] && "$PY" -c 'pass' >/dev/null 2>&1 || need_build=1
-if [ "$need_build" = 0 ]; then
-  bp="$("$PY" -c 'import sys; print(sys.base_prefix)' 2>/dev/null || echo '')"
-  case "$bp" in
-    /usr|/usr/*) : ;;  # 系统 Python，OK（Ubuntu 下 base_prefix 正是 /usr，无尾斜杠）
-    *) need_build=1; log "现有 venv 不是系统 Python（base=$bp，疑似 conda/pyenv），重建以避免 libffi 冲突…" ;;
-  esac
+# 建/修 venv + 装依赖，最后用 import gi 验真（返回 0 即可用）。
+# 重建条件：venv 缺失 / python 失效 / 不是用系统 Python 建的（conda/pyenv）；装完仍加载不了就用系统 Python 重建一次。
+build_deps() {
+  need_build=0
+  [ -d "$INSTALL_DIR/venv" ] && "$PY" -c 'pass' >/dev/null 2>&1 || need_build=1
+  if [ "$need_build" = 0 ]; then
+    bp="$("$PY" -c 'import sys; print(sys.base_prefix)' 2>/dev/null || echo '')"
+    case "$bp" in /usr|/usr/*) : ;; *) need_build=1 ;; esac
+  fi
+  [ "$need_build" = 1 ] && _build_venv
+  _pip_install
+  _gi_ok || { _build_venv; _pip_install; }
+  _gi_ok
+}
+
+run _deploy || { err "$(msg '拉取代码失败，输出如下：' 'failed to fetch the code; output below:')"; dump; exit 1; }
+if run build_deps; then
+  msg "  ✓ 已部署 + 依赖就绪（v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?')）" \
+      "  ✓ deployed + dependencies ready (v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?'))"
+else
+  err "$(msg 'PyGObject 加载失败：请勿在 conda 环境内安装（先 conda deactivate 再重试）。输出如下：' 'PyGObject failed to load: do not run inside a conda env (conda deactivate and retry). Output below:')"; dump; exit 1
 fi
-[ "$need_build" = 1 ] && _build_venv
-_pip_install
-# 自愈兜底：若 PyGObject 仍加载不了（如老 venv 是 conda Python 建的），用系统 Python 重建一次再装
-if ! _gi_ok; then
-  log "PyGObject 加载失败（多半 venv 用了 conda 的 Python）。改用系统 Python 重建 venv…"
-  _build_venv; _pip_install
-fi
-_gi_ok || err "PyGObject 仍无法加载。请勿在 conda 环境内安装（先运行 'conda deactivate' 再重试），或把上面的日志发回。"
 chmod +x "$INSTALL_DIR/run.sh"
 
 # 命令包装器：统一走 run.sh（同一套环境隔离），用户手动 `claude-usage-indicator …` 也不受其 shell 定制影响
@@ -230,8 +240,11 @@ sed "s|__INSTALL_DIR__|$INSTALL_DIR|g" "$INSTALL_DIR/packaging/${APP}.service" >
 # 没有用户级 systemd 会话（SSH/headless）时不要因 set -e 整体失败：降级为提示
 if systemctl --user daemon-reload 2>/dev/null; then
   systemctl --user enable "$APP.service" >/dev/null 2>&1 || true
-  systemctl --user restart "$APP.service" \
-    || warn "$(msg '服务未能启动，稍后可手动：systemctl --user restart '"$APP"'.service' 'Service failed to start; later run: systemctl --user restart '"$APP"'.service')"
+  if systemctl --user restart "$APP.service" >/dev/null 2>&1; then
+    msg "  ✓ 后台服务已启动" "  ✓ background service started"
+  else
+    warn "$(msg '服务未能启动，稍后可手动：systemctl --user restart '"$APP"'.service' 'Service failed to start; later run: systemctl --user restart '"$APP"'.service')"
+  fi
 else
   msg "未检测到用户级 systemd 会话（SSH/headless？）。文件已装好，登录图形会话后运行：\n    systemctl --user enable --now %s.service" \
       "No user systemd session detected (SSH/headless?). Files are installed; in a desktop session run:\n    systemctl --user enable --now %s.service" "$APP"

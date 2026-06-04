@@ -8,6 +8,34 @@
 Cur 39% 2h56m | All 5% Mon 7am
 ```
 
+## 托盘菜单
+
+顶栏显示上面那行；点开菜单大致如下：
+
+```
+Current session | Resets in 1 hr 27 min
+▕████████████░░░░░░░░░░░░▏  49%
+All models | Resets Mon 7:00 AM
+▕███████████░░░░░░░░░░░░░▏  45%
+Status: ok | Last updated: 0s ago
+──────────
+More ▸
+   Refresh now
+   Update now                  （仅有新版时出现）
+   Check for updates
+   Open Claude Usage page
+   Send feedback / report issue
+   Notification language: English
+   About (GitHub)  vX.Y.Z
+   ──────────
+   Uninstall…
+```
+
+- **用量行**：每个限额占两行——`名称 | 重置时间`，下面是进度条 + 百分比。`Sonnet only` / `Opus only` 用过后才出现。
+- **Status**：正常显示 `ok` + 上次更新时间；出故障时变 ⚠️，并在顶层多出 **Show error details**（点开把故障详情弹成通知，可一键复制）。
+- **More ▸**：其余所有操作都收在这里（鼠标悬停展开）。
+- 命令行：`claude-usage-indicator --doctor`（自检登录态/凭证，不泄露密钥）、`--once`（拉取一次并打印，调试用）。
+
 ## 安装
 
 **前置**：Debian / Ubuntu 桌面；已在 **Chrome / Chromium / Brave / Edge** 任一里登录过 `https://claude.ai`（无需常开标签页）。
@@ -24,21 +52,6 @@ curl -fsSL https://raw.githubusercontent.com/muyangli-byte/claude-usage-indicato
 > ```bash
 > sudo apt-get install -y gnome-shell-extension-appindicator   # 然后注销重登一次
 > ```
-
-## 用法
-
-顶栏显示 `Cur …% … | All …% …`。点开菜单：
-
-- **各档用量**：名称 + 进度条 + 百分比 + 重置时间（Current session / All models；Sonnet / Opus 用过才显示）。
-- **Status**：当前状态 + 上次更新时间；正常为 `ok`，出故障时标 ⚠️ 并多出 **Show error details**（点开把故障详情弹成通知，可一键复制）。
-- **More ▸**：其余操作都在这——Refresh now、Update now、Check for updates、Open Claude Usage page、Send feedback、通知语言、About、Uninstall。
-
-命令行：
-
-```bash
-claude-usage-indicator --doctor   # 自检登录态/凭证（不泄露密钥）
-claude-usage-indicator --once     # 拉取一次并打印（调试）
-```
 
 ## 更新
 
@@ -98,6 +111,34 @@ Show your **claude.ai usage** live in the Linux top bar (system tray): the curre
 Cur 39% 2h56m | All 5% Mon 7am
 ```
 
+## Tray menu
+
+The top bar shows the line above; opening the menu looks roughly like:
+
+```
+Current session | Resets in 1 hr 27 min
+▕████████████░░░░░░░░░░░░▏  49%
+All models | Resets Mon 7:00 AM
+▕███████████░░░░░░░░░░░░░▏  45%
+Status: ok | Last updated: 0s ago
+──────────
+More ▸
+   Refresh now
+   Update now                  (only when an update exists)
+   Check for updates
+   Open Claude Usage page
+   Send feedback / report issue
+   Notification language: English
+   About (GitHub)  vX.Y.Z
+   ──────────
+   Uninstall…
+```
+
+- **Usage rows:** two lines per limit — `name | reset time`, then a progress bar + percentage. `Sonnet only` / `Opus only` appear once you've used them.
+- **Status:** shows `ok` + last-updated time normally; on failure it turns ⚠️ and a **Show error details** item appears at the top level (pops the details as a notification you can copy).
+- **More ▸:** everything else lives here (hover to expand).
+- Command line: `claude-usage-indicator --doctor` (self-check login/credentials, no secrets leaked), `--once` (fetch once and print, for debugging).
+
 ## Install
 
 **Requirements:** a Debian / Ubuntu desktop; logged into `https://claude.ai` in **Chrome / Chromium / Brave / Edge** (no need to keep a tab open).
@@ -114,21 +155,6 @@ Your usage shows up in the top bar within seconds. To read the code first: `git 
 > ```bash
 > sudo apt-get install -y gnome-shell-extension-appindicator   # then log out and back in
 > ```
-
-## Usage
-
-The top bar shows `Cur …% … | All …% …`. Open the menu:
-
-- **Per-limit usage:** name + progress bar + percentage + reset time (Current session / All models; Sonnet / Opus appear once used).
-- **Status:** current state + last-updated time; `ok` normally, or a ⚠️ on failure plus a **Show error details** item (pops the details as a notification you can copy).
-- **More ▸:** everything else — Refresh now, Update now, Check for updates, Open Claude Usage page, Send feedback, notification language, About, Uninstall.
-
-Command line:
-
-```bash
-claude-usage-indicator --doctor   # self-check login/credentials (no secrets leaked)
-claude-usage-indicator --once     # fetch once and print (debug)
-```
 
 ## Update
 
