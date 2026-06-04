@@ -1453,8 +1453,9 @@ def cmd_doctor(lang: str = "en") -> int:
              "  (sessionKey may be expired: re-login to claude.ai and retry)")
         return 1
     d = UsageData(status="ok", received_at=datetime.now(), **fields)
-    line(f"  ✓ 成功！当前会话 {d.current_session_used}，本周全模型 {d.all_models_used}",
-         f"  ✓ Success! Current session {d.current_session_used}, weekly all-models {d.all_models_used}")
+    # 指标名保持与托盘菜单/网页一致的英文（Current session / All models），不翻译
+    line(f"  ✓ 成功！Current session {d.current_session_used}，All models {d.all_models_used}",
+         f"  ✓ Success! Current session {d.current_session_used}, All models {d.all_models_used}")
     print()
     line("✅ 一切就绪，可以安装。", "✅ All set — ready to install.")
     return 0

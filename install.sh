@@ -29,7 +29,8 @@ SCRIPT="${INSTALL_DIR}/claude_usage_indicator.py"
 if (exec </dev/tty >/dev/tty) 2>/dev/null; then INTERACTIVE=1; else INTERACTIVE=0; fi
 
 # ---- 语言 ----
-case "${LANG:-}" in zh*) LC=zh;; *) LC=en;; esac
+# 默认中文（不依赖系统 locale —— 同事机器 LANG=C 时也默认中文）；交互时仍可在下面的选择器里改 English。
+LC=zh
 if [ "$INTERACTIVE" = 1 ]; then
   if [ "$LC" = zh ]; then _def=1; else _def=2; fi
   {
@@ -54,6 +55,28 @@ _qlog="$(mktemp 2>/dev/null || echo "/tmp/cui-install.$$.log")"
 trap 'rm -f "$_qlog"' EXIT
 run()  { "$@" </dev/null >"$_qlog" 2>&1; }
 dump() { sed 's/^/      /' "$_qlog" >&2; }
+
+# 进度条 + 转圈：长步骤运行时显示 [████░░░] N% ⠹ label，完成→✓ / 失败→✗ 并吐日志。
+TOTAL=5
+barstr() {  # barstr <步号> -> "[████░░░░] 40%"
+  local n="$1" w=16 i s='' f=$(( n * 16 / TOTAL ))
+  for (( i = 0; i < w; i++ )); do if [ "$i" -lt "$f" ]; then s="$s█"; else s="$s░"; fi; done
+  printf '[%s] %3d%%' "$s" "$(( n * 100 / TOTAL ))"
+}
+step() {  # step <步号> <label> <cmd...>：静默跑 + 转圈进度条；返回命令 rc，失败吐日志
+  local n="$1" label="$2"; shift 2
+  "$@" </dev/null >"$_qlog" 2>&1 &
+  local pid=$! fr=(⠋ ⠙ ⠹ ⠸ ⠼ ⠴ ⠦ ⠧ ⠇ ⠏) i=0
+  if [ "$INTERACTIVE" = 1 ]; then
+    while kill -0 "$pid" 2>/dev/null; do
+      printf '\r  %s %s %s ' "$(barstr "$n")" "${fr[i % 10]}" "$label" >/dev/tty 2>/dev/null || true
+      sleep 0.12; i=$(( i + 1 ))
+    done
+    printf '\r\033[K' >/dev/tty 2>/dev/null || true   # 清掉转圈行
+  fi
+  if wait "$pid"; then printf '  %s ✓ %s\n' "$(barstr "$n")" "$label"; return 0; fi
+  printf '  %s ✗ %s\n' "$(barstr "$n")" "$label" >&2; dump; return 1
+}
 
 # ================= 0. 环境检查（无 apt 硬退出；其余只警告）=================
 msg "【1/5】检查环境…" "[1/5] Checking environment…"
@@ -101,15 +124,12 @@ run sudo apt-get update -y || warn "$(msg 'apt 更新有警告（可能是无关
 # AppIndicator GIR 包名因发行版而异：老的 vs 新的 Ayatana fork，二者都提供所需 typelib。
 IND_PKG="gir1.2-appindicator3-0.1"
 apt-cache show "$IND_PKG" >/dev/null 2>&1 || IND_PKG="gir1.2-ayatanaappindicator3-0.1"
-if run sudo -E apt-get install -y \
+step 2 "$(msg '安装依赖包' 'installing packages')" sudo -E apt-get install -y \
       build-essential python3 python3-venv python3-dev \
       python3-gi gir1.2-gtk-3.0 "$IND_PKG" gir1.2-notify-0.7 \
       libgirepository1.0-dev libcairo2-dev pkg-config \
-      libnotify-bin xdg-utils git curl; then
-  msg "  ✓ 系统依赖已就绪" "  ✓ system dependencies ready"
-else
-  err "$(msg '系统依赖安装失败，输出如下：' 'failed to install system dependencies; output below:')"; dump; exit 1
-fi
+      libnotify-bin xdg-utils git curl \
+  || { err "$(msg '系统依赖安装失败（详见上方日志）。' 'failed to install system dependencies (see log above).')"; exit 1; }
 
 # ================= 2. 拉取代码 + venv + 命令（准备，尚未激活服务）=================
 msg "【3/5】部署最新版 + 建虚拟环境…" "[3/5] Deploying latest version + building venv…"
@@ -156,13 +176,11 @@ build_deps() {
   _gi_ok
 }
 
-run _deploy || { err "$(msg '拉取代码失败，输出如下：' 'failed to fetch the code; output below:')"; dump; exit 1; }
-if run build_deps; then
-  msg "  ✓ 已部署 + 依赖就绪（v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?')）" \
-      "  ✓ deployed + dependencies ready (v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?'))"
-else
-  err "$(msg 'PyGObject 加载失败：请勿在 conda 环境内安装（先 conda deactivate 再重试）。输出如下：' 'PyGObject failed to load: do not run inside a conda env (conda deactivate and retry). Output below:')"; dump; exit 1
-fi
+step 3 "$(msg '拉取最新代码' 'fetching latest code')" _deploy \
+  || { err "$(msg '拉取代码失败（详见上方日志）。' 'failed to fetch the code (see log above).')"; exit 1; }
+step 3 "$(msg '建虚拟环境 + 装 Python 依赖' 'building venv + installing Python deps')" build_deps \
+  || { err "$(msg 'PyGObject 加载失败：请勿在 conda 环境内安装（先 conda deactivate 再重试），详见上方日志。' 'PyGObject failed to load: do not run inside a conda env (conda deactivate and retry); see log above.')"; exit 1; }
+msg "    → v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?')" "    → v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?')"
 chmod +x "$INSTALL_DIR/run.sh"
 
 # 命令包装器：统一走 run.sh（同一套环境隔离），用户手动 `claude-usage-indicator …` 也不受其 shell 定制影响
