@@ -46,8 +46,8 @@ fi
 
 # ---- 输出助手（双语；msg 支持 printf 占位符）----
 # 颜色：仅当 stdout 是终端时上色（管道 / 重定向 / CI 里不污染输出，避免出现裸 ESC 码）。
-if [ -t 1 ]; then _G=$'\033[32m'; _Y=$'\033[33m'; _R=$'\033[31m'; _D=$'\033[90m'; _C=$'\033[36m'; _N=$'\033[0m'
-else _G=''; _Y=''; _R=''; _D=''; _C=''; _N=''; fi
+if [ -t 1 ]; then _G=$'\033[32m'; _Y=$'\033[33m'; _R=$'\033[31m'; _D=$'\033[90m'; _C=$'\033[36m'; _B=$'\033[1m'; _N=$'\033[0m'
+else _G=''; _Y=''; _R=''; _D=''; _C=''; _B=''; _N=''; fi
 log() { printf '%s[install]%s %s\n' "$_C" "$_N" "$*"; }
 err() { printf '%s[install]%s %s\n' "$_R" "$_N" "$*" >&2; }
 warn(){ printf '%s[install]%s %s\n' "$_Y" "$_N" "$*"; }
@@ -63,6 +63,7 @@ ok()   { printf '    %s✓%s %s\n' "$_G" "$_N" "$1"; }
 skip() { printf '    %s·%s %s\n' "$_D" "$_N" "$1"; }
 bad()  { printf '    %s⚠%s %s\n' "$_Y" "$_N" "$1"; }
 fail() { printf '    %s✗%s %s\n' "$_R" "$_N" "$1" >&2; }
+phase(){ printf '\n%s▸%s %s%s%s\n' "$_C" "$_N" "$_B" "$(msg "$1" "$2")" "$_N"; }   # 大步标题：空行 + ▸ 加粗
 
 # 转圈：运行时在原地显示「⠹ 正在做什么 …」，直到后台 pid 结束；返回该命令的退出码。
 # 非交互（无 /dev/tty）时不画动画，直接等。stdin 一律接 /dev/null（避免 curl|bash 把剩余脚本喂给子进程）。
@@ -90,7 +91,7 @@ stepw() {  # 不致命小步（如 apt update）：成功 ✓；失败只 ⚠，
 }
 
 # ================= 【1/5】环境检查（无 apt 硬退出；其余只警告）=================
-msg "【1/5】检查环境…" "[1/5] Checking environment…"
+phase "【1/5】检查环境" "[1/5] Checking environment"
 
 if ! command -v apt-get >/dev/null 2>&1; then
   fail "$(msg '没找到 apt：本脚本仅支持 Debian/Ubuntu。其他发行版请手动装依赖后用 run.sh 运行。' 'apt not found: this installer supports Debian/Ubuntu only. On other distros install the deps manually and use run.sh.')"
@@ -125,7 +126,7 @@ fi
 # ================= 【2/5】系统依赖（sudo）=================
 # 说明：扫描登录态需要先把 Python 依赖装好，所以「装依赖」必须在「验证登录」之前；
 # 真正会让程序常驻运行的「激活服务」放在登录验证通过之后。
-msg "【2/5】安装系统依赖（需要 sudo 授权）…" "[2/5] Installing system dependencies (sudo required)…"
+phase "【2/5】安装系统依赖（需要 sudo 授权）" "[2/5] Installing system dependencies (sudo required)"
 export DEBIAN_FRONTEND=noninteractive
 
 # 先触发一次 sudo 密码提示（可见）；之后 apt 静默运行就不会把密码提示藏进日志。
@@ -151,7 +152,7 @@ step "$(msg '辅助工具（git / curl / xdg-utils）' 'helper tools (git / curl
      _apt xdg-utils git curl || _apt_fail
 
 # ================= 【3/5】拉取代码 + venv + 命令（准备，尚未激活服务）=================
-msg "【3/5】部署最新版 + 建虚拟环境…" "[3/5] Deploying latest version + building venv…"
+phase "【3/5】部署最新版 + 建虚拟环境" "[3/5] Deploying latest version + building venv"
 mkdir -p "$INSTALL_DIR"
 
 # 部署最新 main（已是 git 副本就 fetch+reset，浅克隆安全；否则备份非空目录后 clone）
@@ -225,7 +226,7 @@ chmod +x "$BIN_DIR/$APP"
 ok "$(msg '安装命令 claude-usage-indicator' 'installed command: claude-usage-indicator')"
 
 # ================= 3. 登录验证（激活前的关卡）=================
-msg "【4/5】验证 claude.ai 登录态（激活服务前）…" "[4/5] Verifying your claude.ai login (before activating)…"
+phase "【4/5】验证 claude.ai 登录态（激活服务前）" "[4/5] Verifying your claude.ai login (before activating)"
 GATE=0
 while :; do
   if [ "$INTERACTIVE" = 1 ]; then
@@ -278,14 +279,14 @@ while :; do
 done
 
 if [ "$GATE" = 3 ]; then
-  msg "已停在激活前（依赖已装好，服务未启动）。修好登录后：\n    %s --doctor      # 再次自检，显示 ✅ 后运行：\n    systemctl --user enable --now %s.service\n或直接重跑本安装命令。" \
-      "Stopped before activation (deps installed, service not started). After fixing login:\n    %s --doctor      # re-check; once it shows ✅ run:\n    systemctl --user enable --now %s.service\nor just re-run this installer." \
+  msg "已停在激活前（依赖已装好，服务未启动）。修好登录后：\n    %s --doctor      # 再次自检，显示 ✓ 后运行：\n    systemctl --user enable --now %s.service\n或直接重跑本安装命令。" \
+      "Stopped before activation (deps installed, service not started). After fixing login:\n    %s --doctor      # re-check; once it shows ✓ run:\n    systemctl --user enable --now %s.service\nor just re-run this installer." \
       "$BIN_DIR/$APP" "$APP"
   exit 0
 fi
 
 # ================= 【5/5】激活 systemd 用户服务 =================
-msg "【5/5】激活后台服务…" "[5/5] Activating the background service…"
+phase "【5/5】激活后台服务" "[5/5] Activating the background service"
 mkdir -p "$SERVICE_DIR"
 sed "s|__INSTALL_DIR__|$INSTALL_DIR|g" "$INSTALL_DIR/packaging/${APP}.service" > "$SERVICE"
 ok "$(msg '写入 systemd 服务文件' 'wrote the systemd service file')"
@@ -307,7 +308,7 @@ fi
 # ================= 5. 收尾 =================
 VER="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null || echo '?')"
 echo
-msg "✅ 完成！当前版本 v%s" "✅ Done! version v%s" "$VER"
+printf '%s✓%s %s\n' "$_G" "$_N" "$(msg '完成！当前版本 v%s' 'Done! version v%s' "$VER")"
 msg "  ▸ 几秒内顶栏开始显示用量。" "  ▸ The tray will start showing your usage within seconds."
 msg "  ▸ 常用命令：" "  ▸ Handy commands:"
 echo  "      $APP --doctor       # $(msg '登录态/凭证自检（不泄露密钥）' 'login/credential self-check (no secrets leaked)')"

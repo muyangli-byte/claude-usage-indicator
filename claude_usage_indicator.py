@@ -1457,7 +1457,7 @@ def cmd_doctor(lang: str = "en") -> int:
     line(f"  ✓ 成功！Current session {d.current_session_used}，All models {d.all_models_used}",
          f"  ✓ Success! Current session {d.current_session_used}, All models {d.all_models_used}")
     print()
-    line("✅ 一切就绪，可以安装。", "✅ All set — ready to install.")
+    line("✓ 一切就绪，可以安装。", "✓ All set — ready to install.")
     return 0
 
 
