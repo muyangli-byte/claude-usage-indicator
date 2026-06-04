@@ -11,11 +11,11 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from cui.api import fetch_usage, fetch_remote_version, remote_is_newer
-from cui.config import (APP_NAME, APP_ROOT, DISPLAY_VERSION, GITHUB_OWNER, GITHUB_REPO,
-                        POLL_FAST_S, POLL_SLOW_S, REPO_URL, UPDATE_RESULT, __version__,
-                        _read_config, _read_version, _write_update_result, load_lang)
-from cui.config import BROWSERS
+from cui.api import client_fingerprint, fetch_usage, fetch_remote_version, remote_is_newer
+from cui.config import (APP_NAME, APP_ROOT, BROWSERS, DISPLAY_VERSION, GITHUB_OWNER,
+                        GITHUB_REPO, IS_DEV, POLL_FAST_S, POLL_SLOW_S, REPO_URL,
+                        UPDATE_RESULT, __version__, _read_config, _read_version,
+                        _write_update_result, load_lang)
 from cui.credentials import (CookieError, _cookie_presence, _profile_cookie_files,
                              _profile_label, _valid_org, _valid_sk, load_credentials)
 from cui.model import UsageData
@@ -30,6 +30,7 @@ def run_gui() -> None:
     app.poller = poller
     poller.start()
     print(f"[poller] running v{DISPLAY_VERSION}, fast={POLL_FAST_S}s slow={POLL_SLOW_S}s", flush=True)
+    print(f"[poller] {client_fingerprint()}", flush=True)  # 记录 TLS 伪装指纹，便于排查 Cloudflare 拦截
     Gtk.main()
 
 
@@ -153,6 +154,11 @@ def cmd_self_update() -> int:
         print(msg)
         _write_update_result(f"fail|{msg}")
         return 1
+
+    # dev 实例（从开发仓库而非安装目录运行）：拒绝自更新——否则会把开发工作树 reset 到 origin/main。
+    # 仅靠脏树检查不够（已提交在分支上的改动会被冲掉）；用 IS_DEV 这个更强的信号短路。
+    if IS_DEV:
+        return fail("dev instance; update via git manually (refusing to reset the dev working tree)")
 
     here = APP_ROOT
     # 清掉可能残留的旧面包屑，免得它被下面的脏树检查/git 当成改动而卡住更新

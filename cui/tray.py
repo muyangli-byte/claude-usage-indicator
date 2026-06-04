@@ -41,6 +41,11 @@ def build_app():
             )
             self.indicator.set_status(AppIndicator3.IndicatorStatus.ACTIVE)
             self.indicator.set_label("Claude usage waiting...", "Claude usage")
+            # 出故障时切到的 attention 图标（freedesktop 通用名，缺主题也会回退）
+            try:
+                self.indicator.set_attention_icon_full("dialog-warning", "Claude usage problem")
+            except Exception:
+                pass
 
             self.menu = Gtk.Menu()
             # 不再重复托盘标签那行（顶栏已显示 "Cur … | All …"）；菜单直接从分项开始
@@ -156,6 +161,10 @@ def build_app():
                              d.opus_util, d.opus_used, d.opus_reset, sub_limit=True)
             status_text = UsageData.STATUS_LABEL.get(d.status, d.status)
             bad = d.status not in ("ok", "init")
+            # 托盘图标也反映健康：出故障 → ATTENTION（显示 attention 图标），恢复 → ACTIVE。
+            # 在图标-only 面板（无 AppIndicator 标签）上，这是唯一能一眼看出异常的途径。
+            self.indicator.set_status(
+                AppIndicator3.IndicatorStatus.ATTENTION if bad else AppIndicator3.IndicatorStatus.ACTIVE)
             if bad:
                 if d.consecutive_failures > 1:
                     status_text += f" (x{d.consecutive_failures})"

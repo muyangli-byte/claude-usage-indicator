@@ -45,6 +45,10 @@ POLL_SLOW_S = 90            # 长时间无变化时退避到的慢轮询间隔
 POLL_ERROR_S = 60           # 出错时的重试间隔（避免猛打一个失败/被拦的接口）
 RENOTIFY_BAD_S = 1800       # 持续异常时，每 30 分钟再提醒一次
 REQUEST_TIMEOUT_S = 20
+# curl_cffi 的 TLS 伪装目标。保持具名常量、便于「有意识地」升级：Chrome 大版本前进后，
+# 旧指纹迟早会被 Cloudflare 识破，届时把 "chrome" 换成当前 curl_cffi 支持的具体目标（如 "chrome131"）。
+# 留 "chrome" 这个浮动别名作为默认（跟随所装 curl_cffi 的默认 Chrome 版本，最稳）。
+IMPERSONATE = "chrome"
 UPDATE_CHECK_INTERVAL_S = 86400  # 轮询兜底：每天查一次（即时通知靠下面的 ntfy 推送）
 # 发布即时通知：发布(VERSION 变化)时 GitHub Action 往这个公开 ntfy 主题发一条信号，
 # 客户端常驻订阅、收到就立刻去 GitHub 复核版本（GitHub 仍是唯一真相源，ntfy 只当触发器）。

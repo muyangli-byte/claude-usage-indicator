@@ -8,9 +8,20 @@ import re
 from datetime import datetime
 from typing import Optional
 
-from cui.config import (APP_NAME, DIAG_DIR, GITHUB_OWNER, GITHUB_REPO,
+from cui.config import (APP_NAME, DIAG_DIR, GITHUB_OWNER, GITHUB_REPO, IMPERSONATE,
                         REQUEST_TIMEOUT_S, __version__)
 from cui.model import json_to_raw
+
+
+def client_fingerprint() -> str:
+    """返回 'curl_cffi <版本> / impersonate=<目标>'，用于启动日志与诊断头。
+    被 Cloudflare 拦截时，多半是 TLS 指纹过期——这行能立刻看出当时用的是哪个版本/目标。"""
+    try:
+        import curl_cffi
+        ver = getattr(curl_cffi, "__version__", "?")
+    except Exception:
+        ver = "missing"
+    return f"curl_cffi {ver} / impersonate={IMPERSONATE}"
 
 
 # ===================== 异常分类 =====================
@@ -50,7 +61,8 @@ def dump_diagnostics(kind: str, status_code, text: str) -> str:
             pass
         ts = datetime.now().strftime("%Y%m%d-%H%M%S")
         path = DIAG_DIR / f"{ts}-{kind}.txt"
-        header = f"kind={kind}\nstatus={status_code}\nversion={__version__}\ntime={ts}\n\n"
+        header = (f"kind={kind}\nstatus={status_code}\nversion={__version__}\n"
+                  f"fingerprint={client_fingerprint()}\ntime={ts}\n\n")
         path.write_text(_redact(header + (text or "")[:20000]))
         os.chmod(path, 0o600)
         for old in sorted(DIAG_DIR.glob("*.txt"))[:-20]:
@@ -78,7 +90,7 @@ def fetch_usage(session_key: str, org_id: str) -> dict:
             url,
             cookies={"sessionKey": session_key},
             headers=headers,
-            impersonate="chrome",  # 关键：伪装 Chrome TLS 指纹，过 Cloudflare
+            impersonate=IMPERSONATE,  # 关键：伪装 Chrome TLS 指纹，过 Cloudflare
             timeout=REQUEST_TIMEOUT_S,
         )
     except Exception as e:  # 连接/超时等
