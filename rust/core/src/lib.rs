@@ -215,6 +215,43 @@ pub fn should_notify_bad(
     status != notified_status || secs_since_last > renotify_s
 }
 
+// ===================== 凭证形状校验 =====================
+// 对齐 Python：SK_RE = ^sk-ant-sid\d{2}-[A-Za-z0-9_-]{20,}$；拒绝"错钥匙解出的乱码"。
+pub fn valid_sk(sk: &str) -> bool {
+    let rest = match sk.strip_prefix("sk-ant-sid") {
+        Some(r) => r.as_bytes(),
+        None => return false,
+    };
+    if rest.len() < 3 || !rest[0].is_ascii_digit() || !rest[1].is_ascii_digit() || rest[2] != b'-' {
+        return false;
+    }
+    let tail = &rest[3..];
+    tail.len() >= 20 && tail.iter().all(|&c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+}
+
+// 对齐 Python：ORG_RE = UUIDv4 小写，^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$。
+pub fn valid_org(o: &str) -> bool {
+    let b = o.as_bytes();
+    if b.len() != 36 {
+        return false;
+    }
+    for (i, &c) in b.iter().enumerate() {
+        match i {
+            8 | 13 | 18 | 23 => {
+                if c != b'-' {
+                    return false;
+                }
+            }
+            _ => {
+                if !(c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
+                    return false; // 仅小写 hex
+                }
+            }
+        }
+    }
+    b[14] == b'4' && matches!(b[19], b'8' | b'9' | b'a' | b'b')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -275,6 +312,27 @@ mod tests {
         assert!(!should_notify_bad(5, "cloudflare", "cloudflare", 10.0, 1800.0));
         assert!(should_notify_bad(5, "cloudflare", "cloudflare", 1801.0, 1800.0));
         assert!(should_notify_bad(3, "cloudflare", "auth", 5.0, 1800.0));
+    }
+
+    #[test]
+    fn test_valid_sk() {
+        assert!(valid_sk(&("sk-ant-sid01-".to_string() + &"A".repeat(30))));
+        assert!(valid_sk(&("sk-ant-sid42-".to_string() + &"aZ0_-".repeat(6))));
+        assert!(!valid_sk(&("sk-ant-sid1-".to_string() + &"A".repeat(30)))); // 1 digit
+        assert!(!valid_sk("sk-ant-sid01-short"));
+        assert!(!valid_sk("not-a-key"));
+        assert!(!valid_sk(""));
+    }
+
+    #[test]
+    fn test_valid_org() {
+        assert!(valid_org("a443c5ae-2b4e-479f-a12d-e611203db3e7"));
+        assert!(valid_org("00000000-0000-4000-8000-000000000000"));
+        assert!(!valid_org("a443c5ae-2b4e-179f-a12d-e611203db3e7")); // not v4
+        assert!(!valid_org("a443c5ae-2b4e-479f-c12d-e611203db3e7")); // bad variant
+        assert!(!valid_org("A443C5AE-2B4E-479F-A12D-E611203DB3E7")); // uppercase rejected
+        assert!(!valid_org("nope"));
+        assert!(!valid_org(""));
     }
 
     #[test]

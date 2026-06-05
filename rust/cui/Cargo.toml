@@ -4,12 +4,20 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+aes = "0.9.1"
 anyhow = "1.0.102"
+cbc = "0.2.1"
 cui-core = { path = "../core" }
-decrypt-cookies = "0.11.1"
+glob = "0.3.3"
+hmac = "0.13.0"
 ksni = { path = "../ksni" }   # fork：加了 XAyatanaLabel（顶栏内联标签，无 GTK）
 notify-rust = "4.17.0"
+pbkdf2 = "0.13.0"
+rusqlite = { version = "0.40.0", features = ["bundled"] }
+secret-service = { version = "5.1.0", features = ["rt-tokio-crypto-rust"] }
 serde_json = "1.0.150"
+sha1 = "0.11.0"
+sha2 = "0.11.0"
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "time"] }
 wreq = "5.3.0"
 wreq-util = "2.2.6"

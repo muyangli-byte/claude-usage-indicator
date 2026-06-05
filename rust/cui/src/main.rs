@@ -3,6 +3,7 @@
 //! 凭证暂从 CUI_SK/CUI_ORG 环境变量读取（真凭证层 credentials 模块为下一步）。
 mod api;
 mod config;
+mod creds;
 mod tray;
 
 use cui_core::{bar, fmt_countdown, fmt_countdown_long, fmt_resetday, fmt_resetday_long, pct};
@@ -11,8 +12,17 @@ use std::time::Duration;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let sk = std::env::var("CUI_SK").unwrap_or_default();
-    let org = std::env::var("CUI_ORG").unwrap_or_default();
+    // 自读凭证（GNOME Secret Service + 自解密；不再依赖 CUI_SK/CUI_ORG 桥接）。sk 绝不打印。
+    let (sk, org) = match creds::load_credentials().await {
+        Ok(v) => {
+            println!("[creds] 已自读凭证 (org={})", v.1);
+            v
+        }
+        Err(e) => {
+            eprintln!("[creds] {e}");
+            (String::new(), String::new())
+        }
+    };
     let client = api::client()?;
 
     let handle = tray::CuiTray::default().spawn().await?;
