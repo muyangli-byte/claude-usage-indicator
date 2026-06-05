@@ -1,0 +1,11 @@
+[package]
+name = "cui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+cui-core = { path = "../core" }
+serde_json = "1.0.150"
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+wreq = "5.3.0"
+wreq-util = "2.2.6"
