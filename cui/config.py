@@ -128,5 +128,8 @@ NOTIFY_MSG = {
     },
 }
 
-# 通知图标按语义区分（全用 freedesktop 通用图标，主题缺失也会优雅回退）
-NOTIFY_ICONS = {"warn": "dialog-warning", "update": "software-update-available", "info": "dialog-information"}
+# 通知图标按「通道」区分（全用 freedesktop 通用图标，主题缺失也会优雅回退）。
+# 通道 = 合并身份（同通道复用一条横幅）：status=故障、update=更新生命周期、transient=一次性提示。
+NOTIFY_ICONS = {"status": "dialog-warning", "update": "software-update-available", "transient": "dialog-information"}
+# notify-send 回退路径：每个通道固定一个 replace-id，重复通知就地替换、不堆叠（gi 路径靠对象复用合并）。
+NOTIFY_REPLACE_ID = {"status": "8801", "update": "8802", "transient": "8803"}

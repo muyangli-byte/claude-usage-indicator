@@ -105,6 +105,16 @@ def _fmt_resetday_long(dt: Optional[datetime]) -> str:
 
 
 # ===================== 告警通知策略 =====================
+# 故障分级：需用户动手处理的 → critical（常驻横幅）；会自愈的瞬时错误 → normal（落消息中心、不长期打扰）。
+ACTIONABLE_STATUSES = {"auth", "cookie", "cloudflare", "schema"}
+
+
+def status_level(status: str) -> str:
+    """故障紧急度：auth/cookie/cloudflare/schema（要用户重登/解锁/更新工具）→ 'critical'；
+    network/http 等瞬时、会自动重试恢复的 → 'normal'。"""
+    return "critical" if status in ACTIONABLE_STATUSES else "normal"
+
+
 def should_notify_bad(consecutive_failures: int, status: str, notified_status: str,
                       secs_since_last: float, renotify_s: float) -> bool:
     """是否该（再）弹一条故障告警。

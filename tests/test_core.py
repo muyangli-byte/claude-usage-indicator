@@ -237,3 +237,14 @@ def test_should_notify_bad_renotify_after_window():
 def test_should_notify_bad_on_status_change():
     # error type changed (auth -> cloudflare) while still bad -> notify even within window
     assert model.should_notify_bad(3, "cloudflare", "auth", 5.0, 1800) is True
+
+
+# ---------------- status severity (critical vs normal) ----------------
+def test_status_level_actionable_is_critical():
+    for s in ("auth", "cookie", "cloudflare", "schema"):
+        assert model.status_level(s) == "critical"
+
+
+def test_status_level_transient_is_normal():
+    for s in ("network", "http", "ok", "init", "anything-else"):
+        assert model.status_level(s) == "normal"

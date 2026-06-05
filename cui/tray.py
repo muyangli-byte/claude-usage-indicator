@@ -9,10 +9,10 @@ import time
 
 from cui.api import fetch_remote_version, remote_is_newer
 from cui.config import (APP_ID, APP_NAME, APP_ROOT, DISPLAY_VERSION, IS_DEV, NOTIFY_ICONS,
-                        NOTIFY_MSG, RENOTIFY_BAD_S, REPO_URL, UPDATE_RESULT, USAGE_PAGE_URL,
-                        __version__, _write_config, load_lang)
+                        NOTIFY_MSG, NOTIFY_REPLACE_ID, RENOTIFY_BAD_S, REPO_URL, UPDATE_RESULT,
+                        USAGE_PAGE_URL, __version__, _write_config, load_lang)
 from cui.model import (STORE, UsageData, _bar, _fmt_countdown_long, _fmt_resetday_long,
-                       should_notify_bad)
+                       should_notify_bad, status_level)
 
 
 # ===================== GTK 顶栏 =====================
@@ -95,10 +95,11 @@ def build_app():
             self._notified_status = ""   # 当前已为哪个故障弹过告警（""=没有/已恢复）
             self._last_notify_t = 0.0
             self._notified_update = None
-            # 按「类别」复用通知对象：同类(如反复的异常告警)原地更新同一条、不堆叠；
-            # 不同类(更新 vs 告警)各自一条、互不覆盖。保住引用也避免被 GC 导致按钮回调失效。
+            self._updating_until = 0.0   # 自更新窗口截止时刻：此前抑制故障告警（服务即将重启，瞬时错误是噪声）
+            # 按「通道」复用通知对象：同通道(status/update/transient)原地更新同一条、不堆叠；
+            # 不同通道各自一条、互不覆盖。保住引用也避免被 GC 导致动作回调失效。
             self._notifs: dict = {}
-            self._notif_text: dict = {}   # kind -> (title, body)，供 Copy 复制
+            self._notif_text: dict = {}   # channel -> (title, body)，供 Copy 复制
             self.poller = None            # 由 run_gui 注入
 
             GLib.timeout_add_seconds(1, self._tick)  # 每秒重绘：倒计时平滑走动 + 健康判断
@@ -182,11 +183,13 @@ def build_app():
 
             # 健康告警策略（见 model.should_notify_bad）：连续 ≥2 次失败才弹——滤掉 Cloudflare 偶发
             # managed challenge 这类单次瞬时抖动（下一轮就恢复）；故障类型变化或每 30 分钟再提醒。
-            # 一旦恢复(ok)就主动关掉那条常驻 critical 告警横幅，别让它一直挂着。
             if d.status in ("ok", "init"):
-                if self._notified_status:
-                    self._close_notif("warn")
-                    self._notified_status = ""
+                # 恢复：无条件关掉故障横幅（含「Show error details」手动弹的那条），别让它一直挂着
+                if "status" in self._notifs:
+                    self._close_notif("status")
+                self._notified_status = ""
+            elif time.time() < self._updating_until:
+                pass  # 自更新窗口内：服务即将重启，抑制故障告警（图标/状态行仍照常反映）
             else:
                 secs = time.time() - self._last_notify_t
                 if should_notify_bad(d.consecutive_failures, d.status, self._notified_status, secs, RENOTIFY_BAD_S):
@@ -199,35 +202,36 @@ def build_app():
                 self._notified_update = d.update_available
             return False
 
-        def _notify(self, title: str, body: str, kind: str = "info") -> None:
-            icon = NOTIFY_ICONS.get(kind, "dialog-information")
-            # GNOME 会忽略自定义超时：普通(normal)通知约 4 秒就收进消息列表，critical 则一直留在横幅直到手动关闭。
-            # 其他桌面(KDE/XFCE/MATE)会遵循超时。所以重要的(发现新版本 / 异常)用 critical + 永不超时，
-            # 停留够久不易错过；普通信息给 12 秒。
-            urgent = kind in ("update", "warn")
-            self._notif_text[kind] = (title, body)   # 供「Copy」按钮复制当前这条通知的内容
+        def _notify(self, title: str, body: str, *, channel: str = "transient",
+                    level: str = "normal", action: str = "open") -> None:
+            """弹/更新一条通知。
+              channel  合并身份：同一 channel 复用同一条横幅、原地刷新、绝不堆叠（status/update/transient）。
+              level    'critical'（CRITICAL + 永不超时，需用户处理）/ 'normal'（NORMAL + 12s，会自愈/一次性）。
+              action   主按钮：'update' 一键更新 / 'open' 打开用量页 / 'none' 无（始终另带「Copy」）。
+            GNOME 会忽略自定义超时：normal 约 4s 收进消息中心，critical 留在横幅直到关闭；其它桌面遵循超时。"""
+            icon = NOTIFY_ICONS.get(channel, "dialog-information")
+            urgent = level == "critical"
+            self._notif_text[channel] = (title, body)   # 供「Copy」按钮复制当前这条通知的内容
             if have_notify:
                 try:
-                    # 同一类别复用同一条通知：已存在就原地 update（守护进程按同 id 刷新、不堆叠新横幅）。
-                    # 引用存进 self._notifs，避免被 GC 致动作回调失效。
-                    n = self._notifs.get(kind)
+                    # 同 channel 复用同一条：已存在就原地 update（按同 id 刷新、不堆叠）。引用存进 self._notifs 防 GC。
+                    n = self._notifs.get(channel)
                     if n is None:
                         n = Notify.Notification.new(title, body, icon)
-                        self._notifs[kind] = n
+                        self._notifs[channel] = n
                     else:
                         n.update(title, body, icon)
-                    # 按钮每次都按「当前语言」重建（切换语言后按钮也跟着变）。
-                    # 每种通知都带「Copy」；update 带「一键更新」，其余带「打开 Claude Usage 页面」。
+                    # 按钮每次按「当前语言」重建（切语言后按钮跟着变）。始终带「Copy」。
                     try:
                         n.clear_actions()
-                        if kind == "update":
+                        if action == "update":
                             n.add_action("update", self.L("一键更新", "Update now"),
                                          lambda *a: self.on_update_now(None), None)
-                        else:
+                        elif action == "open":
                             n.add_action("open", self.L("打开 Claude Usage 页面", "Open Claude Usage page"),
                                          lambda *a: self.on_open_page(None), None)
                         n.add_action("copy", self.L("复制信息", "Copy"),
-                                     lambda *a, k=kind: self._copy_notif(k), None)
+                                     lambda *a, c=channel: self._copy_notif(c), None)
                     except Exception:
                         pass
                     n.set_urgency(Notify.Urgency.CRITICAL if urgent else Notify.Urgency.NORMAL)
@@ -237,16 +241,17 @@ def build_app():
                 except Exception as exc:
                     print(f"[notify] libnotify failed: {exc}", flush=True)
             try:
-                # 无 libnotify 时也带上应用名、语义图标、紧急度与停留时长
+                # 无 libnotify：notify-send 用固定 replace-id 按 channel 合并（不堆叠）；带应用名/图标/紧急度/超时。
+                rid = NOTIFY_REPLACE_ID.get(channel, "8800")
                 subprocess.Popen(["notify-send", "-a", "Claude Usage Indicator", "-i", icon,
-                                  "-u", "critical" if urgent else "normal",
+                                  "-r", rid, "-u", "critical" if urgent else "normal",
                                   "-t", "0" if urgent else "12000", title, body])
             except Exception as exc:
                 print(f"[notify] notify-send failed: {exc}", flush=True)
 
-        def _close_notif(self, kind: str) -> None:
-            """主动关掉某一类的常驻通知（如点 Update now 后让「发现新版本」立刻消失）。"""
-            n = self._notifs.pop(kind, None)
+        def _close_notif(self, channel: str) -> None:
+            """主动关掉某一通道的常驻通知（如恢复后关故障横幅、点 Update now 后关「发现新版本」）。"""
+            n = self._notifs.pop(channel, None)
             if n is not None:
                 try:
                     n.close()
@@ -261,14 +266,15 @@ def build_app():
                 title, body = self.L("用量异常", "Usage error"), d.error_msg
             if d.error_msg:
                 body = f"{body}\n({d.error_msg})"
-            self._notify(title, body, kind="warn")
+            # 分级：actionable 故障(登录过期/钥匙环/CF/接口变)→critical 常驻；network/http 瞬时→normal 不长扰
+            self._notify(title, body, channel="status", level=status_level(d.status), action="open")
 
         def _notify_update(self, ver: str) -> None:
             self._notify(
                 self.L("发现新版本", "Update available"),
                 self.L(f"v{__version__} → v{ver}\n点下方「一键更新」即可",
                        f"v{__version__} → v{ver}\nClick “Update now” below"),
-                kind="update")
+                channel="update", level="critical", action="update")
 
         def on_refresh_now(self, _w) -> None:
             if self.poller:
@@ -288,10 +294,10 @@ def build_app():
                     f"desktop: {os.environ.get('XDG_CURRENT_DESKTOP', '?')} / "
                     f"{os.environ.get('XDG_SESSION_TYPE', '?')}")
 
-        def _copy_notif(self, kind: str) -> None:
-            """复制该类通知的当前内容（标题+正文）+ 一行上下文（版本/状态/桌面），便于反馈/排查。
-            静默复制（不再弹「已复制」以免和带 Copy 按钮的 info 通知相互递归）。"""
-            title, body = self._notif_text.get(kind, ("", ""))
+        def _copy_notif(self, channel: str) -> None:
+            """复制该通道通知的当前内容（标题+正文）+ 一行上下文（版本/状态/桌面），便于反馈/排查。
+            静默复制（不再弹「已复制」以免和带 Copy 按钮的通知相互递归）。"""
+            title, body = self._notif_text.get(channel, ("", ""))
             d = STORE.get()
             footer = (f"— Claude Usage Indicator v{DISPLAY_VERSION} | status: {d.status} | "
                       f"{os.environ.get('XDG_CURRENT_DESKTOP', '?')}/{os.environ.get('XDG_SESSION_TYPE', '?')}")
@@ -332,7 +338,7 @@ def build_app():
                         # 这样 _tick/refresh_ui 永远不会在两者之间看到"有新版但未通知"的中间态
                         self._notified_update = remote
                         STORE.set_update(remote)
-                        self._notify(title, body, kind="update")
+                        self._notify(title, body, channel="update", level="critical", action="update")
                         self.refresh_ui()
                         return False
                     GLib.idle_add(announce)
@@ -342,22 +348,21 @@ def build_app():
 
                     def announce_none():
                         STORE.set_update(None)
-                        self._notify(title, body, kind="info")
+                        self._notify(title, body, channel="transient", level="normal", action="open")
                         self.refresh_ui()
                         return False
                     GLib.idle_add(announce_none)
             threading.Thread(target=worker, daemon=True).start()
 
         def on_update_now(self, _w) -> None:
-            # 点了 Update now：先让那条常驻的「发现新版本」立刻消失，再弹「正在更新…」
-            # （正在更新用 info：~4s 自动收起，本进程稍后被重启杀掉也不会残留一条常驻通知）
-            self._close_notif("update")
+            # 点了 Update now：让「发现新版本」那条原地变成「正在更新…」(同 update 通道、降为 normal)，不堆叠。
+            self._updating_until = time.time() + 120  # 更新窗口：期间抑制故障告警（服务即将重启，瞬时错误是噪声）
             # 在独立的 systemd 瞬时单元里跑自更新，这样它重启本服务时不会把更新进程一起杀掉
             py = str(APP_ROOT / "venv" / "bin" / "python")
             script = str(APP_ROOT / "claude_usage_indicator.py")
             self._notify(self.L("正在更新…", "Updating…"),
                          self.L("正在后台更新并重启。", "Updating in the background and restarting."),
-                         kind="info")
+                         channel="update", level="normal", action="open")
             try:
                 subprocess.Popen(
                     ["systemd-run", "--user", "--collect", py, script, "--self-update"],
@@ -379,14 +384,17 @@ def build_app():
                 UPDATE_RESULT.unlink()
             except Exception:
                 return False
+            self._updating_until = 0.0  # 更新已出结果，解除告警抑制
             kind, _, info = content.partition("|")
             if kind == "ok":
                 self._notify(self.L(f"已更新到 v{info}", f"Updated to v{info}"),
-                             self.L("已重启生效。", "Restarted and running."), kind="info")
+                             self.L("已重启生效。", "Restarted and running."),
+                             channel="update", level="normal", action="open")
             elif kind == "fail":
                 self._notify(self.L("更新失败", "Update failed"),
                              self.L(f"{info}\n可在终端运行：{APP_NAME} --update",
-                                    f"{info}\nRun in a terminal: {APP_NAME} --update"), kind="warn")
+                                    f"{info}\nRun in a terminal: {APP_NAME} --update"),
+                             channel="update", level="critical", action="open")
             return False
 
         def on_open_page(self, _w) -> None:
@@ -428,7 +436,8 @@ def build_app():
                       if os.environ.get(k)]
             self._notify(self.L("正在卸载…", "Uninstalling…"),
                          self.L("正在删除服务与文件，完成后打开项目主页。",
-                                "Removing the service and files; the project page opens when done."), kind="info")
+                                "Removing the service and files; the project page opens when done."),
+                         channel="transient", level="normal", action="open")
             try:
                 # 独立 systemd 瞬时单元：卸载里 systemctl stop 杀掉本服务时不会把卸载进程一起带走
                 subprocess.Popen(["systemd-run", "--user", "--collect", *setenv, py, script, "--uninstall"],
@@ -444,6 +453,7 @@ def build_app():
             _write_config({"lang": self.lang})
             self.action_lang.set_label(self._lang_label())
             self._notify(self.L("通知语言：中文", "Notification language: English"),
-                         self.L("以后通知用中文显示。", "Notifications will now be in English."), kind="info")
+                         self.L("以后通知用中文显示。", "Notifications will now be in English."),
+                         channel="transient", level="normal", action="open")
 
     return ClaudeIndicatorApp, Gtk
