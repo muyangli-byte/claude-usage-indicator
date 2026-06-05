@@ -1,57 +1,65 @@
-//! 迁移探测 main：① 验证 wreq 能否过 Cloudflare；② 带真实 cookie 拉用量、与 Python 对数。
-//! sessionKey 只从环境变量 CUI_SK 读取，绝不打印（org_id 不敏感，doctor 本就显示）。
-use std::env;
-use wreq::Client;
-use wreq_util::Emulation;
+//! cui rust-dev 入口：env 取凭证 → ksni 托盘 → 轮询拉用量 → 刷新托盘。
+//! 迁移期最小可运行纵切：证明 ksni 托盘 + wreq 拉取能在 GNOME 上与 Python 正式版并存。
+//! 凭证暂从 CUI_SK/CUI_ORG 环境变量读取（真凭证层 credentials 模块为下一步）。
+mod api;
+mod config;
+mod tray;
+
+use cui_core::{bar, fmt_countdown, fmt_countdown_long, fmt_resetday, fmt_resetday_long, pct};
+use ksni::TrayMethods;
+use std::time::Duration;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let client = Client::builder().emulation(Emulation::Chrome137).build()?;
+async fn main() -> anyhow::Result<()> {
+    let sk = std::env::var("CUI_SK").unwrap_or_default();
+    let org = std::env::var("CUI_ORG").unwrap_or_default();
+    let client = api::client()?;
 
-    // ① 无凭证打 claude.ai：wreq 若过了 Cloudflare，会进到真 API（返回 JSON），而非 "Just a moment" 挑战页
-    let r = client
-        .get("https://claude.ai/api/organizations")
-        .header("accept", "*/*")
-        .send()
-        .await?;
-    let st = r.status().as_u16();
-    let body = r.text().await?;
-    let challenged = body.contains("Just a moment") || body.contains("challenge-platform");
-    let snippet: String = body.chars().take(90).collect();
-    println!("[① Cloudflare 探测] HTTP {st} | 挑战页?={challenged} | body[:90]={snippet}");
+    let handle = tray::CuiTray::default().spawn().await?;
+    println!(
+        "[rust-dev] ksni 托盘已注册 (id={})，每 {}s 刷新",
+        config::APP_ID,
+        config::POLL_SECS
+    );
 
-    // ② 带真实 cookie 拉用量，和 Python --once 对数
-    match (env::var("CUI_SK"), env::var("CUI_ORG")) {
-        (Ok(sk), Ok(org)) if !sk.is_empty() && !org.is_empty() => {
-            let url = format!("https://claude.ai/api/organizations/{org}/usage");
-            let r2 = client
-                .get(&url)
-                .header("accept", "*/*")
-                .header("anthropic-client-platform", "web_claude_ai")
-                .header("referer", "https://claude.ai/new")
-                .header("cookie", format!("sessionKey={sk}"))
-                .send()
-                .await?;
-            let st2 = r2.status().as_u16();
-            let txt = r2.text().await?;
-            match serde_json::from_str::<serde_json::Value>(&txt) {
-                Ok(j) => match cui_core::validate_and_extract(&j) {
-                    Ok(raw) => println!(
-                        "[② 用量 via wreq] HTTP {st2} | current session {} (reset {}) | all models {} (reset {})",
-                        cui_core::pct(raw.five_hour_util),
-                        cui_core::fmt_countdown(raw.five_hour_reset),
-                        cui_core::pct(raw.seven_day_util),
-                        cui_core::fmt_resetday(raw.seven_day_reset),
-                    ),
-                    Err(e) => println!("[② 用量] HTTP {st2} | schema 错误: {e:?}"),
-                },
-                Err(_) => println!(
-                    "[② 用量] HTTP {st2} | 非 JSON | 挑战页?={}",
-                    txt.contains("Just a moment")
-                ),
-            }
+    loop {
+        let result = if sk.is_empty() || org.is_empty() {
+            Err(anyhow::anyhow!("未设 CUI_SK/CUI_ORG（凭证层待建）"))
+        } else {
+            api::fetch_usage(&client, &sk, &org).await
+        };
+
+        handle
+            .update(|t: &mut tray::CuiTray| match &result {
+                Ok(raw) => {
+                    t.healthy = true;
+                    t.summary = format!(
+                        "Cur {} {} | All {} {}",
+                        pct(raw.five_hour_util),
+                        fmt_countdown(raw.five_hour_reset),
+                        pct(raw.seven_day_util),
+                        fmt_resetday(raw.seven_day_reset),
+                    );
+                    t.rows = vec![
+                        format!("Current session | Resets in {}", fmt_countdown_long(raw.five_hour_reset)),
+                        format!("{}  {}", bar(raw.five_hour_util, 24), pct(raw.five_hour_util)),
+                        format!("All models | Resets {}", fmt_resetday_long(raw.seven_day_reset)),
+                        format!("{}  {}", bar(raw.seven_day_util, 24), pct(raw.seven_day_util)),
+                    ];
+                    t.status_line = "Status: ok".into();
+                }
+                Err(e) => {
+                    t.healthy = false;
+                    t.summary = "⚠ Claude usage".into();
+                    t.status_line = format!("Status: {e}");
+                }
+            })
+            .await;
+
+        match &result {
+            Ok(raw) => println!("[poll] ok | Cur {} | All {}", pct(raw.five_hour_util), pct(raw.seven_day_util)),
+            Err(e) => println!("[poll] err | {e}"),
         }
-        _ => println!("[② 用量] 未设 CUI_SK/CUI_ORG，跳过对数"),
+        tokio::time::sleep(Duration::from_secs(config::POLL_SECS)).await;
     }
-    Ok(())
 }

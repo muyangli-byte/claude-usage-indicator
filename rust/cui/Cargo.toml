@@ -4,8 +4,12 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.102"
 cui-core = { path = "../core" }
+decrypt-cookies = "0.11.1"
+ksni = "0.3.4"
+notify-rust = "4.17.0"
 serde_json = "1.0.150"
-tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread"] }
+tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "time"] }
 wreq = "5.3.0"
 wreq-util = "2.2.6"
