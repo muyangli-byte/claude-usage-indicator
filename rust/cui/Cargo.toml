@@ -7,7 +7,7 @@ edition = "2021"
 anyhow = "1.0.102"
 cui-core = { path = "../core" }
 decrypt-cookies = "0.11.1"
-ksni = "0.3.4"
+ksni = { path = "../ksni" }   # fork：加了 XAyatanaLabel（顶栏内联标签，无 GTK）
 notify-rust = "4.17.0"
 serde_json = "1.0.150"
 tokio = { version = "1.52.3", features = ["macros", "rt-multi-thread", "time"] }

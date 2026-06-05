@@ -20,6 +20,10 @@ impl Tray for CuiTray {
     fn title(&self) -> String {
         "Claude Usage".into()
     }
+    // 顶栏内联文字标签（XAyatanaLabel）——这才是"常态显示数字"那行，等价 Python AppIndicator.set_label
+    fn label(&self) -> String {
+        self.summary.clone()
+    }
     // 健康用图标表达：正常=收发图标，异常=警告图标（SNI 无内联文字，先靠图标 + tooltip）
     fn icon_name(&self) -> String {
         if self.healthy {
