@@ -11,7 +11,8 @@ from cui.api import fetch_remote_version, remote_is_newer
 from cui.config import (APP_ID, APP_NAME, APP_ROOT, DISPLAY_VERSION, IS_DEV, NOTIFY_ICONS,
                         NOTIFY_MSG, RENOTIFY_BAD_S, REPO_URL, UPDATE_RESULT, USAGE_PAGE_URL,
                         __version__, _write_config, load_lang)
-from cui.model import STORE, UsageData, _bar, _fmt_countdown_long, _fmt_resetday_long
+from cui.model import (STORE, UsageData, _bar, _fmt_countdown_long, _fmt_resetday_long,
+                       should_notify_bad)
 
 
 # ===================== GTK 顶栏 =====================
@@ -91,7 +92,7 @@ def build_app():
             self.action_update.set_visible(False)  # 只有 check 到新版才显示这一行
             self.action_error.set_visible(False)   # 只有出故障才显示
 
-            self._last_status = "init"
+            self._notified_status = ""   # 当前已为哪个故障弹过告警（""=没有/已恢复）
             self._last_notify_t = 0.0
             self._notified_update = None
             # 按「类别」复用通知对象：同类(如反复的异常告警)原地更新同一条、不堆叠；
@@ -179,13 +180,19 @@ def build_app():
             else:
                 self.action_update.set_visible(False)
 
-            # 心跳/健康告警：进入异常立刻提醒；持续异常每 30 分钟再提醒一次
-            if d.status not in ("ok", "init"):
-                now_t = time.time()
-                if d.status != self._last_status or (now_t - self._last_notify_t) > RENOTIFY_BAD_S:
+            # 健康告警策略（见 model.should_notify_bad）：连续 ≥2 次失败才弹——滤掉 Cloudflare 偶发
+            # managed challenge 这类单次瞬时抖动（下一轮就恢复）；故障类型变化或每 30 分钟再提醒。
+            # 一旦恢复(ok)就主动关掉那条常驻 critical 告警横幅，别让它一直挂着。
+            if d.status in ("ok", "init"):
+                if self._notified_status:
+                    self._close_notif("warn")
+                    self._notified_status = ""
+            else:
+                secs = time.time() - self._last_notify_t
+                if should_notify_bad(d.consecutive_failures, d.status, self._notified_status, secs, RENOTIFY_BAD_S):
                     self._notify_status(d)
-                    self._last_notify_t = now_t
-            self._last_status = d.status
+                    self._last_notify_t = time.time()
+                    self._notified_status = d.status
 
             if d.update_available and d.update_available != self._notified_update:
                 self._notify_update(d.update_available)

@@ -104,6 +104,19 @@ def _fmt_resetday_long(dt: Optional[datetime]) -> str:
     return f"{loc.strftime('%a')} {h12}:{loc.strftime('%M')} {loc.strftime('%p')}"
 
 
+# ===================== 告警通知策略 =====================
+def should_notify_bad(consecutive_failures: int, status: str, notified_status: str,
+                      secs_since_last: float, renotify_s: float) -> bool:
+    """是否该（再）弹一条故障告警。
+    - 连续 < 2 次失败：不弹——滤掉单次瞬时抖动（如 Cloudflare 偶发 managed challenge，下一轮就恢复），
+      避免留下一条永不自动消失的 critical 横幅。
+    - 已连续 ≥ 2 次：当故障类型变化（status != 上次已通知的）或距上次通知超过 renotify_s 时再弹。
+    恢复(ok)时的「关掉横幅」由调用方处理（见 tray.refresh_ui）。"""
+    if consecutive_failures < 2:
+        return False
+    return status != notified_status or secs_since_last > renotify_s
+
+
 # ===================== 数据模型 =====================
 @dataclass
 class UsageData:

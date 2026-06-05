@@ -211,3 +211,29 @@ def test_store_failure_increments_and_keeps_data():
     assert d.status == "auth" and d.error_msg == "boom"
     assert d.consecutive_failures == 1
     assert d.five_hour_util == 50  # data preserved across a failed poll
+
+
+# ---------------- bad-status notify policy ----------------
+def test_should_notify_bad_grace_for_single_blip():
+    # 1 consecutive failure (e.g. a one-off Cloudflare managed challenge) -> do NOT notify
+    assert model.should_notify_bad(1, "cloudflare", "", 0.0, 1800) is False
+    assert model.should_notify_bad(0, "cloudflare", "", 9999.0, 1800) is False
+
+
+def test_should_notify_bad_first_persistent():
+    # 2nd consecutive failure of a not-yet-notified status -> notify
+    assert model.should_notify_bad(2, "cloudflare", "", 0.0, 1800) is True
+
+
+def test_should_notify_bad_suppresses_repeat_within_window():
+    # already notified this status, still bad, within renotify window -> stay quiet
+    assert model.should_notify_bad(5, "cloudflare", "cloudflare", 10.0, 1800) is False
+
+
+def test_should_notify_bad_renotify_after_window():
+    assert model.should_notify_bad(5, "cloudflare", "cloudflare", 1801.0, 1800) is True
+
+
+def test_should_notify_bad_on_status_change():
+    # error type changed (auth -> cloudflare) while still bad -> notify even within window
+    assert model.should_notify_bad(3, "cloudflare", "auth", 5.0, 1800) is True
