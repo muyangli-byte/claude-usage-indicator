@@ -1,18 +1,19 @@
-//! cui rust-dev 入口：env 取凭证 → ksni 托盘 → 轮询拉用量 → 刷新托盘。
-//! 迁移期最小可运行纵切：证明 ksni 托盘 + wreq 拉取能在 GNOME 上与 Python 正式版并存。
-//! 凭证暂从 CUI_SK/CUI_ORG 环境变量读取（真凭证层 credentials 模块为下一步）。
+//! cui rust-dev 入口：自读凭证 → ksni 托盘（含 XAyatanaLabel 内联标签）→ 自适应轮询。
+//! 与 Python 正式版并存（独立 APP_ID）。凭证/拉取/托盘全自包含，无 GTK、单二进制。
 mod api;
 mod config;
 mod creds;
+mod poller;
 mod tray;
 
-use cui_core::{bar, fmt_countdown, fmt_countdown_long, fmt_resetday, fmt_resetday_long, pct};
 use ksni::TrayMethods;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // 自读凭证（GNOME Secret Service + 自解密；不再依赖 CUI_SK/CUI_ORG 桥接）。sk 绝不打印。
+    // 自读凭证（GNOME Secret Service + 自解密）。sk 绝不打印。
     let (sk, org) = match creds::load_credentials().await {
         Ok(v) => {
             println!("[creds] 已自读凭证 (org={})", v.1);
@@ -24,52 +25,29 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let client = api::client()?;
+    let refresh = Arc::new(Notify::new());
 
-    let handle = tray::CuiTray::default().spawn().await?;
-    println!(
-        "[rust-dev] ksni 托盘已注册 (id={})，每 {}s 刷新",
-        config::APP_ID,
-        config::POLL_SECS
-    );
+    let tray = tray::CuiTray {
+        status: "init".into(),
+        lang: creds::load_lang(),
+        refresh: Some(refresh.clone()),
+        ..Default::default()
+    };
+    let handle = tray.spawn().await?;
+    println!("[rust-dev] ksni 托盘已注册 (id={})", config::APP_ID);
 
-    loop {
-        let result = if sk.is_empty() || org.is_empty() {
-            Err(anyhow::anyhow!("未设 CUI_SK/CUI_ORG（凭证层待建）"))
-        } else {
-            api::fetch_usage(&client, &sk, &org).await
-        };
-
-        handle
-            .update(|t: &mut tray::CuiTray| match &result {
-                Ok(raw) => {
-                    t.healthy = true;
-                    t.summary = format!(
-                        "Cur {} {} | All {} {}",
-                        pct(raw.five_hour_util),
-                        fmt_countdown(raw.five_hour_reset),
-                        pct(raw.seven_day_util),
-                        fmt_resetday(raw.seven_day_reset),
-                    );
-                    t.rows = vec![
-                        format!("Current session | Resets in {}", fmt_countdown_long(raw.five_hour_reset)),
-                        format!("{}  {}", bar(raw.five_hour_util, 24), pct(raw.five_hour_util)),
-                        format!("All models | Resets {}", fmt_resetday_long(raw.seven_day_reset)),
-                        format!("{}  {}", bar(raw.seven_day_util, 24), pct(raw.seven_day_util)),
-                    ];
-                    t.status_line = "Status: ok".into();
-                }
-                Err(e) => {
-                    t.healthy = false;
-                    t.summary = "⚠ Claude usage".into();
-                    t.status_line = format!("Status: {e}");
-                }
-            })
-            .await;
-
-        match &result {
-            Ok(raw) => println!("[poll] ok | Cur {} | All {}", pct(raw.five_hour_util), pct(raw.seven_day_util)),
-            Err(e) => println!("[poll] err | {e}"),
-        }
-        tokio::time::sleep(Duration::from_secs(config::POLL_SECS)).await;
+    // 每秒重绘：让倒计时 / “Ns ago” / 顶栏标签平滑走动（ksni 按哈希去重，未变化不发 D-Bus）。
+    {
+        let h = handle.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                let _ = h.update(|_| {}).await;
+            }
+        });
     }
+
+    // 自适应轮询（阻塞驱动；Refresh now 通过 refresh 唤醒）。
+    poller::run(handle, client, refresh, sk, org).await;
+    Ok(())
 }

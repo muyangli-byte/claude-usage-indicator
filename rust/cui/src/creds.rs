@@ -52,6 +52,16 @@ fn read_config() -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+/// 读持久化的通知语言（config.json 的 lang），默认 en。对齐 Python load_lang 的配置部分。
+pub fn load_lang() -> String {
+    read_config()
+        .get("lang")
+        .and_then(|v| v.as_str())
+        .filter(|s| *s == "zh" || *s == "en")
+        .unwrap_or("en")
+        .to_string()
+}
+
 fn derive_key(pw: &[u8]) -> [u8; 16] {
     let mut key = [0u8; 16];
     pbkdf2::pbkdf2_hmac::<sha1::Sha1>(pw, b"saltysalt", 1, &mut key);
