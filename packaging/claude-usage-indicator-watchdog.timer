@@ -1,0 +1,11 @@
+# 每 ~3 分钟跑一次看门狗（开机后 2 分钟首跑）。卡死/崩溃循环在 ~5–8 分钟内被恢复到 Python。
+[Unit]
+Description=Claude Usage Indicator — migration restore watchdog timer
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=3min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

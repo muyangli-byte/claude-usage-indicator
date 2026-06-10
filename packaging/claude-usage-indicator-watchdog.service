@@ -1,0 +1,8 @@
+# 迁移回退看门狗（oneshot，由 .timer 周期触发）。bridge 版安装并 enable 它，迁移到 Rust 后仍长驻，
+# 是「Rust 崩溃循环 / kill-switch」时把客户端拉回 Python 的安全网。ExecStart 由 install.sh 替换 __INSTALL_DIR__。
+[Unit]
+Description=Claude Usage Indicator — migration restore watchdog
+
+[Service]
+Type=oneshot
+ExecStart=__INSTALL_DIR__/packaging/migration-watchdog.sh
