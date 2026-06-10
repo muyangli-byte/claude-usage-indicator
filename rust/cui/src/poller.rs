@@ -42,12 +42,36 @@ fn next_interval(status: &str, changed: bool, stable: &mut u32) -> u64 {
     POLL_SLOW_S.min(POLL_FAST_S * 2u64.pow((*stable).min(5)))
 }
 
+/// 查一次 GitHub 版本（到间隔 / Refresh 之外的 ntfy 推送 / "Check for updates" 都走这里）：
+/// 比当前新且没弹过就弹更新通知，并刷新菜单的 update_available。
+#[allow(clippy::too_many_arguments)]
+async fn do_version_check(
+    client: &Client,
+    notify_tx: &Sender<NotifyCmd>,
+    lang: &str,
+    handle: &Handle<CuiTray>,
+    notified_update: &mut Option<String>,
+    last_ver_check: &mut Option<Instant>,
+) {
+    *last_ver_check = Some(Instant::now());
+    if let Some(remote) = api::fetch_remote_version(client).await {
+        let newer = remote_is_newer(&remote, VERSION);
+        if newer && notified_update.as_deref() != Some(remote.as_str()) {
+            let _ = notify_tx.send(NotifyCmd::Update { ver: remote.clone(), lang: lang.to_string() });
+            *notified_update = Some(remote.clone());
+        }
+        let upd = if newer { Some(remote) } else { None };
+        handle.update(move |t: &mut CuiTray| t.update_available = upd).await;
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
     handle: Handle<CuiTray>,
     client: Client,
     refresh: Arc<Notify>,
     show_error: Arc<Notify>,
+    check_update: Arc<Notify>,
     notify_tx: Sender<NotifyCmd>,
     lang: String,
     mut sk: String,
@@ -122,18 +146,9 @@ pub async fn run(
             }
         }
 
-        // 版本检查（首次 + 每 UPDATE_CHECK_S）
+        // 版本检查（首次 + 每 UPDATE_CHECK_S 兜底）
         if last_ver_check.map_or(true, |t| t.elapsed() >= Duration::from_secs(UPDATE_CHECK_S)) {
-            last_ver_check = Some(Instant::now());
-            if let Some(remote) = api::fetch_remote_version(&client).await {
-                let newer = remote_is_newer(&remote, VERSION);
-                if newer && notified_update.as_deref() != Some(remote.as_str()) {
-                    let _ = notify_tx.send(NotifyCmd::Update { ver: remote.clone(), lang: lang.clone() });
-                    notified_update = Some(remote.clone());
-                }
-                let upd = if newer { Some(remote) } else { None };
-                handle.update(move |t: &mut CuiTray| t.update_available = upd).await;
-            }
+            do_version_check(&client, &notify_tx, &lang, &handle, &mut notified_update, &mut last_ver_check).await;
         }
 
         let interval = next_interval(&status, changed, &mut stable);
@@ -142,14 +157,19 @@ pub async fn run(
         println!("[poll] {status} (next {interval}s{tag}){extra}");
 
         let mut fire_error = false;
+        let mut do_check = false;
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
             _ = refresh.notified() => { force_creds = true; }
             _ = show_error.notified() => { fire_error = true; }
+            _ = check_update.notified() => { do_check = true; } // "Check for updates" / ntfy 推送
         }
         if fire_error && bad {
             // Show error details：立即弹当前故障（绕过连续≥2 的门槛），对齐 Python on_show_error
             let _ = notify_tx.send(NotifyCmd::Status { status: status.clone(), error: error.clone(), lang: lang.clone() });
+        }
+        if do_check {
+            do_version_check(&client, &notify_tx, &lang, &handle, &mut notified_update, &mut last_ver_check).await;
         }
     }
 }

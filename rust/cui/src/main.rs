@@ -5,6 +5,7 @@ mod cli;
 mod config;
 mod creds;
 mod notifier;
+mod ntfy;
 mod poller;
 mod selfupdate;
 mod tray;
@@ -68,17 +69,27 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
     let client = api::client()?;
     let refresh = Arc::new(Notify::new());
     let show_error = Arc::new(Notify::new());
+    let check_update = Arc::new(Notify::new());
     let notify_tx = notifier::spawn();
+
+    // 刚自更新过 → 开机弹一次「已更新到 vX」
+    if let Some(ver) = selfupdate::consume_breadcrumb() {
+        let _ = notify_tx.send(notifier::NotifyCmd::Updated { ver, lang: lang.clone() });
+    }
 
     let tray = tray::CuiTray {
         status: "init".into(),
         lang: lang.clone(),
         refresh: Some(refresh.clone()),
         show_error: Some(show_error.clone()),
+        check_update: Some(check_update.clone()),
         ..Default::default()
     };
     let handle = tray.spawn().await?;
     println!("[rust-dev] ksni 托盘已注册 (id={})", config::APP_ID);
+
+    // 常驻订阅 ntfy：发版即时触发版本复核（断线自重连，不影响每天兜底）
+    tokio::spawn(ntfy::subscribe(client.clone(), check_update.clone()));
 
     // 每秒重绘：倒计时 / “Ns ago” / 顶栏标签平滑走动（ksni 按哈希去重，未变不发 D-Bus）。
     {
@@ -91,6 +102,6 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
         });
     }
 
-    poller::run(handle, client, refresh, show_error, notify_tx, lang, sk, org).await;
+    poller::run(handle, client, refresh, show_error, check_update, notify_tx, lang, sk, org).await;
     Ok(())
 }

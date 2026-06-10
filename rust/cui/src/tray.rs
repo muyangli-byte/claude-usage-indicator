@@ -45,8 +45,9 @@ pub struct CuiTray {
     pub update_available: Option<String>,
     pub lang: String, // "en"/"zh"（为后续通知用）
     pub received_at: Option<Instant>,
-    pub refresh: Option<Arc<Notify>>, // "Refresh now"/"Check for updates" → 唤醒轮询
+    pub refresh: Option<Arc<Notify>>, // "Refresh now" → 唤醒轮询（并强制重读 cookie）
     pub show_error: Option<Arc<Notify>>, // "Show error details" → 让 poller 弹当前故障通知
+    pub check_update: Option<Arc<Notify>>, // "Check for updates" → 立即查 GitHub 版本
 }
 
 impl CuiTray {
@@ -185,7 +186,7 @@ impl Tray for CuiTray {
 
         // More ▸
         let refresh = self.refresh.clone();
-        let refresh2 = self.refresh.clone();
+        let chk = self.check_update.clone();
         let mut sub: Vec<MenuItem<Self>> = vec![act(
             "Refresh now".into(),
             Box::new(move |_| {
@@ -200,7 +201,7 @@ impl Tray for CuiTray {
         sub.push(act(
             "Check for updates".into(),
             Box::new(move |_| {
-                if let Some(n) = &refresh2 {
+                if let Some(n) = &chk {
                     n.notify_one();
                 }
             }),

@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Sender};
 pub enum NotifyCmd {
     Status { status: String, error: String, lang: String },
     Update { ver: String, lang: String },
+    Updated { ver: String, lang: String }, // 自更新完成后开机首弹
     Close(&'static str),
 }
 
@@ -77,6 +78,15 @@ pub fn spawn() -> Sender<NotifyCmd> {
                     let title = if lang == "zh" { "发现新版本" } else { "Update available" };
                     let body = format!("v{} → v{}", crate::config::VERSION, ver);
                     show(&mut handles, "update", "software-update-available", title, &body, Urgency::Critical, Timeout::Never);
+                }
+                NotifyCmd::Updated { ver, lang } => {
+                    let (title, body) = if lang == "zh" {
+                        ("已更新".to_string(), format!("已更新到 v{ver}"))
+                    } else {
+                        ("Updated".to_string(), format!("Now running v{ver}"))
+                    };
+                    // 复用 update channel → 顶掉「发现新版本」横幅（同进程内），瞬时展示
+                    show(&mut handles, "update", "emblem-default", &title, &body, Urgency::Normal, Timeout::Milliseconds(8000));
                 }
                 NotifyCmd::Close(ch) => {
                     if let Some(h) = handles.remove(ch) {
