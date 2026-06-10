@@ -1,5 +1,5 @@
 //! 命令行子命令（对齐 Python cli.py）：--once / --check / --doctor。
-use crate::config::VERSION;
+use crate::config::{ID_SUFFIX, VERSION};
 use crate::{api, creds};
 use cui_core::{fmt_countdown, fmt_resetday, pct, remote_is_newer, valid_org, valid_sk};
 
@@ -63,7 +63,10 @@ pub async fn cmd_doctor(lang: &str) -> i32 {
     let rule = "=".repeat(52);
 
     println!("{rule}");
-    line(" Claude 用量指示器 —— 登录态自检 (rust)", " Claude Usage Indicator — login self-check (rust)");
+    line(
+        &format!(" Claude 用量指示器 —— 登录态自检{ID_SUFFIX}"),
+        &format!(" Claude Usage Indicator — login self-check{ID_SUFFIX}"),
+    );
     println!("{rule}");
     let user = std::env::var("USER").unwrap_or_else(|_| "?".into());
     let desktop = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_else(|_| "?".into());

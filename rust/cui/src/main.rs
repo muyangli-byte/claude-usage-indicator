@@ -1,4 +1,4 @@
-//! cui rust-dev 入口：无参 → 托盘 GUI；带子命令 → CLI（--once/--check/--doctor）。
+//! cui 入口：无参 → 托盘 GUI；带子命令 → CLI（--once/--check/--doctor/--self-update）。
 //! 与 Python 正式版并存（独立 APP_ID）。凭证/拉取/托盘/通知全自包含，无 GTK、单二进制。
 mod api;
 mod cli;
@@ -44,12 +44,13 @@ async fn main() -> anyhow::Result<()> {
         "check" => std::process::exit(cli::cmd_check().await),
         "doctor" => std::process::exit(cli::cmd_doctor(&lang).await),
         "selfupdate" => std::process::exit(selfupdate::cmd_self_update().await),
-        "version" => println!("cui (rust-dev) v{}", config::VERSION),
+        "version" => println!("claude-usage-indicator {}{}", config::VERSION, config::BUILD_TAG),
         "help" => println!(
-            "cui (rust-dev) — Claude usage tray\n\nUSAGE:\n  cui                          run the tray (default)\n  \
+            "claude-usage-indicator{} — Claude usage tray\n\nUSAGE:\n  cui                          run the tray (default)\n  \
              cui --once                   fetch once and print\n  \
              cui --doctor [--lang zh|en]  credential self-check\n  \
-             cui --check                  check for updates\n  cui --version"
+             cui --check                  check for updates\n  cui --version",
+            config::ID_SUFFIX
         ),
         _ => run_gui(lang).await?,
     }
@@ -87,7 +88,7 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
         ..Default::default()
     };
     let handle = tray.spawn().await?;
-    println!("[rust-dev] ksni 托盘已注册 (id={})", config::APP_ID);
+    println!("[cui] ksni tray registered (id={})", config::APP_ID);
 
     // 常驻订阅 ntfy：发版即时触发版本复核（断线自重连，不影响每天兜底）
     tokio::spawn(ntfy::subscribe(client.clone(), check_update.clone()));

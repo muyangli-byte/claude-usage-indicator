@@ -1,7 +1,7 @@
 //! ksni 托盘（纯 SNI/D-Bus，无 GTK）。完整菜单对齐 Python cui/tray.py：
 //! 每档两行（名称|reset + 进度条+%）、Sonnet/Opus 用过才显示、Status 行、More 子菜单全部动作。
 //! 顶栏内联文字走 XAyatanaLabel（patched ksni）。
-use crate::config::{APP_ID, REPO_URL, USAGE_PAGE_URL, VERSION};
+use crate::config::{APP_ID, BUILD_TAG, ID_SUFFIX, LABEL_PREFIX, REPO_URL, USAGE_PAGE_URL, VERSION};
 use cui_core::{bar, fmt_countdown, fmt_countdown_long, fmt_resetday, fmt_resetday_long, pct, Raw};
 use ksni::menu::{StandardItem, SubMenu};
 use ksni::{MenuItem, ToolTip, Tray};
@@ -75,13 +75,13 @@ impl CuiTray {
                     format!("⚠ {base}")
                 }
             }
-            _ if self.healthy() => "Claude usage…".into(),
+            _ if self.healthy() => "Claude usage waiting...".into(), // 对齐 Python 首屏文案
             _ => format!("⚠ {}", self.status_label()),
         }
     }
     fn feedback_url(&self) -> String {
         let body = format!(
-            "<!-- describe the issue -->\n\n---\nClaude Usage Indicator (rust-dev) v{VERSION}\nstatus: {}\nerror: {}",
+            "<!-- describe the issue -->\n\n---\nClaude Usage Indicator{ID_SUFFIX} v{VERSION}\nstatus: {}\nerror: {}",
             self.status, self.error
         );
         format!("{REPO_URL}/issues/new?title={}&body={}", urlencode("Feedback: "), urlencode(&body))
@@ -107,10 +107,10 @@ impl Tray for CuiTray {
         APP_ID.into()
     }
     fn title(&self) -> String {
-        "Claude Usage".into()
+        "Claude usage".into() // 与 Python set_label 标题大小写一致
     }
     fn label(&self) -> String {
-        format!("[rust] {}", self.summary()) // dev 版加前缀，与 Python 正式版区分
+        format!("{}{}", LABEL_PREFIX, self.summary()) // prod 无前缀；dev 加 "[rust] "
     }
     fn icon_name(&self) -> String {
         if self.healthy() {
@@ -198,9 +198,14 @@ impl Tray for CuiTray {
             format!("Notification language: {}", if self.lang == "zh" { "中文" } else { "English" }),
             Box::new(|t| t.toggle_lang()),
         ));
-        sub.push(act(format!("About (GitHub)  v{VERSION}-rust-dev"), Box::new(|_| open(REPO_URL))));
-        sub.push(MenuItem::Separator);
-        sub.push(act("Quit (rust-dev)".into(), Box::new(|_| std::process::exit(0))));
+        sub.push(act(format!("About (GitHub)  v{VERSION}{BUILD_TAG}"), Box::new(|_| open(REPO_URL))));
+        // Python 正式版菜单无 Quit（生命周期交给 systemd）。dev 保留 Quit 方便本机测试。
+        // TODO(迁移): prod 这里应是 "Uninstall…"（对齐 Python），待迁移安装器布局定稿后接线。
+        #[cfg(feature = "dev")]
+        {
+            sub.push(MenuItem::Separator);
+            sub.push(act("Quit (rust-dev)".into(), Box::new(|_| std::process::exit(0))));
+        }
 
         items.push(SubMenu { label: "More".into(), submenu: sub, ..Default::default() }.into());
         items

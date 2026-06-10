@@ -2,6 +2,13 @@
 name = "cui"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
+
+[features]
+# 默认（prod）= 与 Python 逐字一致的身份；`--features dev` 保留 -rust-dev 身份供本机并存测试。
+# -rust-dev / [rust] 等字符串只在 dev 编进二进制，prod 二进制里完全没有。
+default = []
+dev = []
 
 [dependencies]
 aes = "0.9.1"
