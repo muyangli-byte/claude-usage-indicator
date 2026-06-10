@@ -14,6 +14,20 @@ fn open(url: &str) {
     let _ = Command::new("xdg-open").arg(url).spawn();
 }
 
+/// 触发自更新：在独立 systemd 瞬时单元里跑 `cui --self-update`，这样它重启本服务时不会把更新进程一起杀掉。
+fn spawn_self_update() {
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = exe.to_string_lossy().into_owned();
+        if Command::new("systemd-run")
+            .args(["--user", "--collect", &exe, "--self-update"])
+            .spawn()
+            .is_err()
+        {
+            let _ = Command::new(&exe).arg("--self-update").spawn();
+        }
+    }
+}
+
 fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -109,7 +123,7 @@ impl Tray for CuiTray {
         "Claude Usage".into()
     }
     fn label(&self) -> String {
-        self.summary()
+        format!("[rust] {}", self.summary()) // dev 版加前缀，与 Python 正式版区分
     }
     fn icon_name(&self) -> String {
         if self.healthy() {
@@ -181,8 +195,7 @@ impl Tray for CuiTray {
             }),
         )];
         if let Some(v) = &self.update_available {
-            let _v = v.clone();
-            sub.push(act(format!("⬆ Update now → v{_v}"), Box::new(|_| open(&format!("{REPO_URL}/releases")))));
+            sub.push(act(format!("⬆ Update now → v{v}"), Box::new(|_| spawn_self_update())));
         }
         sub.push(act(
             "Check for updates".into(),

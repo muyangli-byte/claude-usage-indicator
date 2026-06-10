@@ -6,6 +6,7 @@ mod config;
 mod creds;
 mod notifier;
 mod poller;
+mod selfupdate;
 mod tray;
 
 use ksni::TrayMethods;
@@ -23,6 +24,7 @@ async fn main() -> anyhow::Result<()> {
             "--once" => cmd = "once",
             "--check" => cmd = "check",
             "--doctor" => cmd = "doctor",
+            "--self-update" => cmd = "selfupdate",
             "--version" | "-V" => cmd = "version",
             "--help" | "-h" => cmd = "help",
             "--lang" => {
@@ -39,6 +41,7 @@ async fn main() -> anyhow::Result<()> {
         "once" => std::process::exit(cli::cmd_once().await),
         "check" => std::process::exit(cli::cmd_check().await),
         "doctor" => std::process::exit(cli::cmd_doctor(&lang).await),
+        "selfupdate" => std::process::exit(selfupdate::cmd_self_update().await),
         "version" => println!("cui (rust-dev) v{}", config::VERSION),
         "help" => println!(
             "cui (rust-dev) — Claude usage tray\n\nUSAGE:\n  cui                          run the tray (default)\n  \

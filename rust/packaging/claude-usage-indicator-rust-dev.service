@@ -1,0 +1,15 @@
+# dev systemd --user 单元（迁移期）：开机自启 Rust 托盘，与 Python 正式版并存。
+# 安装：cp 到 ~/.config/systemd/user/ ，改 ExecStart 为你的 release 二进制路径，再
+#   systemctl --user daemon-reload && systemctl --user enable --now claude-usage-indicator-rust-dev.service
+[Unit]
+Description=Claude Usage Indicator (Rust dev)
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart=%h/claude-usage-indicator/rust/target/release/cui
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

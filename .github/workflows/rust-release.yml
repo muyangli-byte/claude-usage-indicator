@@ -1,0 +1,36 @@
+name: rust-release
+# 发布 Release 时构建 Rust 二进制并作为资产上传，供 `cui --self-update` 下载。
+# 只在 release published / 手动 dispatch 时运行（分支 push 不触发）。
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: System deps (BoringSSL bindings need cmake + libclang)
+        run: sudo apt-get update && sudo apt-get install -y cmake clang libclang-dev
+      - name: Build (release)
+        working-directory: rust
+        run: cargo build -p cui --release
+      - name: Stage artifact
+        working-directory: rust
+        run: |
+          arch=$(uname -m)            # x86_64 / aarch64 — 与 std::env::consts::ARCH 对齐
+          strip target/release/cui
+          cp target/release/cui "cui-${arch}-linux"
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: rust/cui-*-linux
+      - name: Upload artifact (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: cui-linux
+          path: rust/cui-*-linux

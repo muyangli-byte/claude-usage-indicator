@@ -3,6 +3,7 @@ pub const APP_ID: &str = "claude-usage-indicator-rust-dev";
 pub const VERSION: &str = "2.11.0"; // 与 Python 当前版本对齐（迁移期硬编码）
 
 pub const REPO_URL: &str = "https://github.com/muyangli-byte/claude-usage-indicator";
+pub const SERVICE: &str = "claude-usage-indicator-rust-dev.service"; // 自更新后重启的 systemd --user 单元
 pub const USAGE_PAGE_URL: &str = "https://claude.ai/new#settings/usage";
 
 // 自适应轮询参数（对齐 Python）
