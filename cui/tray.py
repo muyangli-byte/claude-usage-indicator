@@ -10,7 +10,7 @@ import time
 from cui.api import fetch_remote_version, remote_is_newer
 from cui.config import (APP_ID, APP_NAME, APP_ROOT, DISPLAY_VERSION, IS_DEV, NOTIFY_ICONS,
                         NOTIFY_MSG, NOTIFY_REPLACE_ID, RENOTIFY_BAD_S, REPO_URL, UPDATE_RESULT,
-                        USAGE_PAGE_URL, __version__, _write_config, load_lang)
+                        USAGE_PAGE_URL, __version__, _read_config, _write_config, load_lang)
 from cui.model import (STORE, UsageData, _bar, _fmt_countdown_long, _fmt_resetday_long,
                        should_notify_bad, status_level)
 
@@ -20,7 +20,7 @@ def build_app():
     import gi
     gi.require_version("Gtk", "3.0")
     gi.require_version("AppIndicator3", "0.1")
-    from gi.repository import Gtk, GLib, AppIndicator3
+    from gi.repository import Gtk, GLib, Gdk, AppIndicator3
 
     have_notify = False
     Notify = None
@@ -36,6 +36,16 @@ def build_app():
     class ClaudeIndicatorApp:
         def __init__(self) -> None:
             self.lang = load_lang()
+            # 用量阈值提醒（默认关，用户在 More 菜单自己开）
+            _cfg = _read_config()
+            self.alert_enabled = bool(_cfg.get("alert_enabled", False))
+            try:
+                self.alert_threshold = int(_cfg.get("alert_threshold", 80))
+            except (TypeError, ValueError):
+                self.alert_threshold = 80
+            self._alerted = False     # 本窗口是否已提醒过（穿过阈值后置位，跌回/重置清零）
+            self._alert_win = None    # 当前告警窗口引用（避免叠弹/被 GC）
+            self._ready = False       # __init__ 期间忽略菜单项的 toggled 回调
             self.indicator = AppIndicator3.Indicator.new(
                 APP_ID, "network-transmit-receive",   # dev 用 -dev 的 id，能与正式版并存
                 AppIndicator3.IndicatorCategory.APPLICATION_STATUS,
@@ -81,6 +91,27 @@ def build_app():
             _sub("Open Claude Usage page", self.on_open_page)
             _sub("Send feedback / report issue", self.on_feedback)
             self.action_lang = _sub(self._lang_label(), self.on_toggle_lang)
+
+            # 用量提醒：开关 + 阈值（current session 用量穿过阈值时弹醒目小窗）
+            submenu.append(Gtk.SeparatorMenuItem())
+            self.item_alert = Gtk.CheckMenuItem(label="Usage alert (current session)")
+            self.item_alert.set_active(self.alert_enabled)
+            self.item_alert.connect("toggled", self.on_toggle_alert)
+            submenu.append(self.item_alert)
+            thr = Gtk.MenuItem(label="Alert threshold")
+            thr_menu = Gtk.Menu()
+            group = None
+            for _p in (60, 70, 80, 90, 95):
+                ri = Gtk.RadioMenuItem.new_with_label_from_widget(group, f"{_p}%")
+                if group is None:
+                    group = ri
+                ri.set_active(_p == self.alert_threshold)
+                ri.connect("toggled", self.on_set_threshold, _p)
+                thr_menu.append(ri)
+            thr.set_submenu(thr_menu)
+            submenu.append(thr)
+            submenu.append(Gtk.SeparatorMenuItem())
+
             _sub(f"About (GitHub)  v{DISPLAY_VERSION}", self.on_about)
             submenu.append(Gtk.SeparatorMenuItem())
             _sub("Uninstall…", self.on_uninstall)
@@ -89,6 +120,7 @@ def build_app():
 
             self.menu.show_all()
             self.indicator.set_menu(self.menu)
+            self._ready = True   # 之后菜单 toggled 回调才生效（避免构建期 set_active 触发写盘）
             self.action_update.set_visible(False)  # 只有 check 到新版才显示这一行
             self.action_error.set_visible(False)   # 只有出故障才显示
 
@@ -200,6 +232,16 @@ def build_app():
                 self.action_update.set_visible(True)
             else:
                 self.action_update.set_visible(False)
+
+            # 用量阈值提醒：current session 用量穿过阈值时弹一次醒目小闪窗（跌回/窗口重置后才会再触发）。
+            _u = d.five_hour_util
+            if _u is not None:
+                _cur = float(_u)   # five_hour_util 本身就是百分数(0..100)，不要再 *100
+                if self.alert_enabled and _cur >= self.alert_threshold and not self._alerted:
+                    self._alerted = True
+                    self._show_usage_alert(int(round(_cur)))
+                elif _cur < self.alert_threshold:
+                    self._alerted = False
 
             # 健康告警策略（见 model.should_notify_bad）：连续 ≥2 次失败才弹——滤掉 Cloudflare 偶发
             # managed challenge 这类单次瞬时抖动（下一轮就恢复）；故障类型变化或每 30 分钟再提醒。
@@ -485,6 +527,98 @@ def build_app():
             except Exception as exc:
                 print(f"[changelog] window failed: {exc}", flush=True)
                 return False
+
+        def on_toggle_alert(self, w) -> None:
+            if not self._ready:
+                return
+            self.alert_enabled = w.get_active()
+            _write_config({"alert_enabled": self.alert_enabled})
+            self._alerted = False
+            print(f"[alert] enabled={self.alert_enabled}", flush=True)
+
+        def on_set_threshold(self, w, pct) -> None:
+            if not self._ready or not w.get_active():
+                return
+            self.alert_threshold = int(pct)
+            _write_config({"alert_threshold": self.alert_threshold})
+            self._alerted = False
+            print(f"[alert] threshold={self.alert_threshold}%", flush=True)
+
+        def _show_usage_alert(self, pct: int) -> None:
+            """用量穿过阈值时弹的醒目小闪窗（应用内窗口，绝不调 main_quit）。"""
+            if self._alert_win is not None:
+                return  # 已有一个在显示，不叠弹
+            try:
+                text = self.L(f"Current session 已使用 {pct}%", f"Current session at {pct}%")
+                win = Gtk.Window()
+                win.set_keep_above(True)
+                win.set_urgency_hint(True)
+                win.set_decorated(False)
+                win.set_resizable(False)
+                win.set_default_size(560, 240)
+                win.set_position(Gtk.WindowPosition.CENTER_ALWAYS)
+                try:
+                    win.set_icon_name("dialog-warning")
+                except Exception:
+                    pass
+                try:
+                    css = Gtk.CssProvider()
+                    css.load_from_data(b".flashA{background-color:#e03131;} .flashB{background-color:#141414;}")
+                    Gtk.StyleContext.add_provider_for_screen(
+                        Gdk.Screen.get_default(), css, Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+                except Exception:
+                    pass
+                eb = Gtk.EventBox()
+                eb.add_events(Gdk.EventMask.BUTTON_PRESS_MASK)
+                eb.get_style_context().add_class("flashA")
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=16)
+                box.set_valign(Gtk.Align.CENTER)
+                box.set_halign(Gtk.Align.CENTER)
+                box.set_border_width(28)
+                lab = Gtk.Label()
+                lab.set_markup("<span size='34000' weight='bold' foreground='#ffffff'>{}</span>".format(
+                    GLib.markup_escape_text(text)))
+                lab.set_justify(Gtk.Justification.CENTER)
+                lab.set_line_wrap(True)
+                box.pack_start(lab, False, False, 0)
+                hint = Gtk.Label()
+                hint.set_markup("<span size='11000' foreground='#e6e6e6'>{}</span>".format(
+                    GLib.markup_escape_text(self.L("点任意处 / 按 Esc 关闭", "Click anywhere / Esc to dismiss"))))
+                box.pack_start(hint, False, False, 0)
+                eb.add(box)
+                win.add(eb)
+                state = {"on": True}
+
+                def _flash():
+                    if self._alert_win is None:
+                        return False
+                    ctx = eb.get_style_context()
+                    if state["on"]:
+                        ctx.remove_class("flashA")
+                        ctx.add_class("flashB")
+                    else:
+                        ctx.remove_class("flashB")
+                        ctx.add_class("flashA")
+                    state["on"] = not state["on"]
+                    return True
+
+                def _close(*_):
+                    self._alert_win = None
+                    win.destroy()
+                    return False
+
+                GLib.timeout_add(550, _flash)
+                eb.connect("button-press-event", _close)
+                win.connect("key-press-event", _close)
+                win.connect("destroy", lambda *_: setattr(self, "_alert_win", None))
+                GLib.timeout_add_seconds(120, _close)  # 兜底自动收
+                self._alert_win = win
+                win.show_all()
+                win.present()
+                print(f"[alert] usage alert shown ({pct}%, {self.lang})", flush=True)
+            except Exception as exc:
+                self._alert_win = None
+                print(f"[alert] window failed: {exc}", flush=True)
 
         def on_open_page(self, _w) -> None:
             try:
