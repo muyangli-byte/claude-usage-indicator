@@ -207,8 +207,19 @@ impl Tray for CuiTray {
             Box::new(|t| t.toggle_lang()),
         ));
         sub.push(act(format!("About (GitHub)  v{VERSION}{BUILD_TAG}"), Box::new(|_| open(REPO_URL))));
-        // Python 正式版菜单无 Quit（生命周期交给 systemd）。dev 保留 Quit 方便本机测试。
-        // TODO(迁移): prod 这里应是 "Uninstall…"（对齐 Python），待迁移安装器布局定稿后接线。
+        // prod：与 Python 一致，最后是 "Uninstall…"（在分离单元里跑 uninstall.sh --purge 后退出）。
+        // dev：Python 无 Quit，但本机测试保留 Quit 更方便。
+        #[cfg(not(feature = "dev"))]
+        {
+            sub.push(MenuItem::Separator);
+            sub.push(act(
+                "Uninstall…".into(),
+                Box::new(|_| {
+                    crate::uninstall::spawn_detached_uninstall();
+                    std::process::exit(0);
+                }),
+            ));
+        }
         #[cfg(feature = "dev")]
         {
             sub.push(MenuItem::Separator);

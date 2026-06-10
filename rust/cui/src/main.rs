@@ -10,6 +10,7 @@ mod ntfy;
 mod poller;
 mod selfupdate;
 mod tray;
+mod uninstall;
 
 use ksni::TrayMethods;
 use std::sync::Arc;
@@ -26,7 +27,8 @@ async fn main() -> anyhow::Result<()> {
             "--once" => cmd = "once",
             "--check" => cmd = "check",
             "--doctor" => cmd = "doctor",
-            "--self-update" => cmd = "selfupdate",
+            "--self-update" | "--update" => cmd = "selfupdate", // Rust 客户端的"更新"=自更新二进制
+            "--uninstall" => cmd = "uninstall",
             "--version" | "-V" => cmd = "version",
             "--help" | "-h" => cmd = "help",
             "--lang" => {
@@ -44,12 +46,18 @@ async fn main() -> anyhow::Result<()> {
         "check" => std::process::exit(cli::cmd_check().await),
         "doctor" => std::process::exit(cli::cmd_doctor(&lang).await),
         "selfupdate" => std::process::exit(selfupdate::cmd_self_update().await),
+        "uninstall" => {
+            uninstall::spawn_detached_uninstall();
+            println!("uninstall started in a detached unit");
+        }
         "version" => println!("claude-usage-indicator {}{}", config::VERSION, config::BUILD_TAG),
         "help" => println!(
             "claude-usage-indicator{} — Claude usage tray\n\nUSAGE:\n  cui                          run the tray (default)\n  \
              cui --once                   fetch once and print\n  \
              cui --doctor [--lang zh|en]  credential self-check\n  \
-             cui --check                  check for updates\n  cui --version",
+             cui --check                  check for updates\n  \
+             cui --update                 update to the latest release\n  \
+             cui --uninstall              remove Claude Usage Indicator\n  cui --version",
             config::ID_SUFFIX
         ),
         _ => run_gui(lang).await?,

@@ -25,6 +25,16 @@ log "停止并禁用服务..."
 systemctl --user stop "$APP.service" 2>/dev/null || true
 systemctl --user disable "$APP.service" 2>/dev/null || true
 rm -f "$SERVICE"
+
+# 迁移产物（Rust 期）：回退看门狗定时器、语言开关哨兵、Rust 二进制兄弟目录、迁移状态/缓存。
+# 迁移前这些大多不存在，删起来无副作用；保证 Python 或 Rust 任一形态都被彻底清掉。
+systemctl --user disable --now "${APP}-watchdog.timer" 2>/dev/null || true
+rm -f "${HOME}/.config/systemd/user/${APP}-watchdog.timer" \
+      "${HOME}/.config/systemd/user/${APP}-watchdog.service" \
+      "${HOME}/.config/${APP}/use-rust"
+rm -rf "${HOME}/.local/share/${APP}-bin" \
+       "${HOME}/.local/state/${APP}" \
+       "${HOME}/.cache/${APP}"
 systemctl --user daemon-reload 2>/dev/null || true
 
 log "删除程序文件（诊断数据在安装目录内，一并删除）..."
