@@ -246,17 +246,22 @@ def main() -> int:
         log("pinned to Python (watchdog cooldown) — skip")
         return 0
     m = fetch_manifest()
-    if m is None:
-        return 0                                  # fail-closed
+    if not isinstance(m, dict):                   # None 或非 dict（坏 JSON）→ fail-closed
+        return 0
     if m.get("rollback_all"):
         log("manifest rollback_all=true — kill-switch active, do not migrate")
         return 0
     arch = platform.machine()                     # x86_64 / aarch64 …
     allowed = m.get("arch", ["x86_64"])
-    if arch not in allowed:
+    if not isinstance(allowed, list) or arch not in allowed:
         log(f"arch {arch} not in {allowed} — excluded, stay Python")
         return 0
-    bucket, pct = machine_bucket(), int(m.get("percent", 0))
+    bucket = machine_bucket()
+    try:
+        pct = int(m.get("percent", 0))            # 坏 percent → 当 0（fail-safe，不迁）
+    except (TypeError, ValueError):
+        log(f"manifest percent not an int ({m.get('percent')!r}) — treat as 0, stay Python")
+        pct = 0
     if bucket >= pct:
         log(f"bucket {bucket} >= rollout {pct}% — not my turn yet")
         return 0

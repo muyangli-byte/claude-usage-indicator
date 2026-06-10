@@ -6,5 +6,5 @@
   "arch": ["x86_64"],
   "rollback_all": false,
   "block_below": "0.0.0",
-  "_comment": "Python→Rust 灰度清单。客户端按机器哈希分桶决定是否迁移到 Rust。ntfy 无法分桶，故灰度只靠本文件（改它不会发 ntfy）。字段：target=要迁到的 Rust 版本(必须==根 VERSION，CI 校验)；percent=放量 0..100(按 /etc/machine-id 哈希分桶，单调放大)；min_glibc=机器需满足的最低 glibc(发出资产实测底线，见 rust-release.yml)；arch=允许迁移的架构；rollback_all=全局 kill-switch(true→看门狗把已迁移机器恢复 Python)；block_below=强制更新地板(<它的版本强制升到 target，CI 校验 block_below<=target)。取不到本文件时：前向迁移 fail-closed(不迁)、回退 fail-safe(仍允许恢复)。当前为分支模板(percent:0,target占位)，正式切换发布时落到 main。"
+  "_comment": "Python→Rust 灰度清单。客户端按机器哈希分桶决定是否迁移到 Rust。ntfy 无法分桶，故灰度只靠本文件（改它不会发 ntfy）。字段：target=要迁到的 Rust 版本(发版前人工核对==根 VERSION)；percent=放量 0..100(按 /etc/machine-id 哈希分桶，单调放大)；min_glibc=机器需满足的最低 glibc(目前仅 rust-release.yml 构建期强制；migrate.py 暂未读，靠预检跑 --version 实测兜底)；arch=允许迁移的架构(migrate.py 读)；rollback_all=全局 kill-switch(true→看门狗把已迁移机器恢复 Python)；block_below=强制更新地板(migrate.py 暂未读，预留)。取不到本文件时：前向迁移 fail-closed(不迁)、回退 fail-safe(仍允许恢复)。注：尚无 CI 校验 target/block_below 一致性，抬 percent 前需人工核对。"
 }
