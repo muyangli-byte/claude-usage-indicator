@@ -407,15 +407,84 @@ def build_app():
             self._updating_until = 0.0  # 更新已出结果，解除告警抑制
             kind, _, info = content.partition("|")
             if kind == "ok":
-                self._notify(self.L(f"已更新到 v{info}", f"Updated to v{info}"),
-                             self.L("已重启生效。", "Restarted and running."),
-                             channel="update", level="normal", action="open")
+                # 有本版本 release notes → 弹「更新内容」窗口；没有 → 回落原来的「已更新到 vX」通知。
+                if not self._show_changelog_window(info):
+                    self._notify(self.L(f"已更新到 v{info}", f"Updated to v{info}"),
+                                 self.L("已重启生效。", "Restarted and running."),
+                                 channel="update", level="normal", action="open")
             elif kind == "fail":
                 self._notify(self.L("更新失败", "Update failed"),
                              self.L(f"{info}\n可在终端运行：{APP_NAME} --update",
                                     f"{info}\nRun in a terminal: {APP_NAME} --update"),
                              channel="update", level="critical", action="open")
             return False
+
+        def _load_release_notes(self, ver: str):
+            """读 notes/<ver>.<lang>.md，按 用户语言→en→zh 降级。返回正文或 None。"""
+            base = APP_ROOT / "notes"
+            for lang in (self.lang, "en", "zh"):
+                p = base / f"{ver}.{lang}.md"
+                try:
+                    if p.exists():
+                        text = p.read_text(encoding="utf-8").strip()
+                        if text:
+                            return text
+                except Exception:
+                    pass
+            return None
+
+        def _show_changelog_window(self, ver: str) -> bool:
+            """更新完成后弹「更新内容」窗口（按语言偏好）。无 notes 返回 False 让调用方回落通知。"""
+            text = self._load_release_notes(ver)
+            if not text:
+                return False
+            try:
+                title = self.L(f"Claude 用量指示器 — v{ver} 更新内容",
+                               f"Claude Usage Indicator — What's new in v{ver}")
+                win = Gtk.Window(title=title)
+                win.set_default_size(480, 380)
+                win.set_position(Gtk.WindowPosition.CENTER)
+                try:
+                    win.set_icon_name("network-transmit-receive")
+                except Exception:
+                    pass
+                box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+                box.set_border_width(14)
+                heading = Gtk.Label()
+                heading.set_markup("<big><b>{}</b></big>".format(
+                    GLib.markup_escape_text(self.L(f"v{ver} 更新内容", f"What's new in v{ver}"))))
+                heading.set_xalign(0.0)
+                box.pack_start(heading, False, False, 0)
+                sw = Gtk.ScrolledWindow()
+                sw.set_policy(Gtk.PolicyType.AUTOMATIC, Gtk.PolicyType.AUTOMATIC)
+                tv = Gtk.TextView()
+                tv.set_editable(False)
+                tv.set_cursor_visible(False)
+                tv.set_wrap_mode(Gtk.WrapMode.WORD)
+                tv.set_left_margin(8)
+                tv.set_right_margin(8)
+                tv.set_top_margin(6)
+                tv.get_buffer().set_text(text)
+                sw.add(tv)
+                box.pack_start(sw, True, True, 0)
+                btns = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=8)
+                btns.set_halign(Gtk.Align.END)
+                gh = Gtk.Button(label=self.L("在 GitHub 查看", "View on GitHub"))
+                gh.connect("clicked", lambda *_: subprocess.Popen(["xdg-open", f"{REPO_URL}/releases"]))
+                close = Gtk.Button(label=self.L("关闭", "Close"))
+                close.connect("clicked", lambda *_: win.destroy())
+                btns.pack_start(gh, False, False, 0)
+                btns.pack_start(close, False, False, 0)
+                box.pack_start(btns, False, False, 0)
+                win.add(box)
+                win.set_keep_above(True)
+                win.show_all()
+                win.present()
+                print(f"[changelog] shown v{ver} ({self.lang})", flush=True)
+                return True
+            except Exception as exc:
+                print(f"[changelog] window failed: {exc}", flush=True)
+                return False
 
         def on_open_page(self, _w) -> None:
             try:
