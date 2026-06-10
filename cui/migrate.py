@@ -157,11 +157,11 @@ def sni_watcher_present() -> bool:
     """咨询性：会话总线上有没有 StatusNotifierWatcher（真正渲染托盘的东西）。仅记录，不当硬门——
     没有 watcher 时 Python 托盘同样不可见，换栈不构成回退。"""
     try:
-        from gi.repository import Gio
+        from gi.repository import Gio, GLib
         bus = Gio.bus_get_sync(Gio.BusType.SESSION, None)
         res = bus.call_sync("org.freedesktop.DBus", "/org/freedesktop/DBus",
                             "org.freedesktop.DBus", "NameHasOwner",
-                            __import__("gi").repository.GLib.Variant("(s)", ("org.kde.StatusNotifierWatcher",)),
+                            GLib.Variant("(s)", ("org.kde.StatusNotifierWatcher",)),
                             None, Gio.DBusCallFlags.NONE, 2000, None)
         return bool(res.unpack()[0])
     except Exception:

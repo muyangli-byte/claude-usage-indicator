@@ -301,6 +301,18 @@ if systemctl --user daemon-reload 2>/dev/null; then
   _restart(){ systemctl --user restart "$APP.service"; }
   step "$(msg '启动后台服务' 'start the background service')" _restart \
     || bad "$(msg '服务未能启动，稍后可手动：systemctl --user restart '"$APP"'.service' 'service failed to start; later run: systemctl --user restart '"$APP"'.service')"
+  # 迁移回退看门狗：现在就装好并开启（迁移到 Rust 前哨兵不存在→看门狗每次空转、零副作用；
+  # 迁移后它才是「Rust 崩溃/卡死/kill-switch 时拉回 Python」的安全网）。兄弟 bin 目录在 git 树外。
+  mkdir -p "$HOME/.local/share/${APP}-bin"
+  if [ -f "$INSTALL_DIR/packaging/${APP}-watchdog.service" ]; then
+    for u in "${APP}-watchdog.service" "${APP}-watchdog.timer"; do
+      sed "s|__INSTALL_DIR__|$INSTALL_DIR|g" "$INSTALL_DIR/packaging/$u" > "$SERVICE_DIR/$u"
+    done
+    systemctl --user daemon-reload 2>/dev/null || true
+    systemctl --user enable --now "${APP}-watchdog.timer" >/dev/null 2>&1 \
+      && ok "$(msg '装好迁移回退看门狗（迁移前空转）' 'installed migration restore-watchdog (idle until migration)')" \
+      || true
+  fi
 else
   skip "$(msg '未检测到用户级 systemd 会话（SSH/headless）——文件已装好；进入桌面会话后运行：systemctl --user enable --now '"$APP"'.service' 'no user systemd session (SSH/headless) — files installed; in a desktop session run: systemctl --user enable --now '"$APP"'.service')"
 fi

@@ -104,6 +104,26 @@ def build_app():
 
             GLib.timeout_add_seconds(1, self._tick)  # 每秒重绘：倒计时平滑走动 + 健康判断
             GLib.timeout_add_seconds(2, self._consume_update_breadcrumb)  # 自更新重启后通知"已更新到 vX"
+            GLib.timeout_add_seconds(25, self._maybe_launch_migration)    # 托盘起来后→分离进程跑迁移钩子
+
+        def _maybe_launch_migration(self):
+            """一次性：托盘已注册后，以分离进程跑 Python→Rust 迁移钩子（migrate.py 自带全部门控：
+            already-rust / manifest fail-closed / kill-switch / 分桶 / 预检验「二进制能跑」）。
+            dev 实例不迁；任何失败完全静默——迁移永远是「有就迁、没有照常 Python」。"""
+            if IS_DEV:
+                return False
+            try:
+                py = str(APP_ROOT / "venv" / "bin" / "python")
+                script = str(APP_ROOT / "cui" / "migrate.py")
+                subprocess.Popen(
+                    ["systemd-run", "--user", "--collect", py, script, "--commit"],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+            except FileNotFoundError:
+                pass   # 无 systemd-run：迁移本就依赖 systemd --user，这台机器不在范围，跳过
+            except Exception:
+                pass
+            return False  # 一次性
 
         def _info(self, text: str):
             item = Gtk.MenuItem(label=text)
