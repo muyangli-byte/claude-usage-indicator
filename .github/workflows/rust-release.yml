@@ -6,6 +6,9 @@ on:
     types: [published]
   workflow_dispatch:
 
+permissions:
+  contents: write   # action-gh-release 需写权限往 Release 上传资产(默认 GITHUB_TOKEN 只读 → 403)
+
 env:
   # 已锁迁移决策(§11.1)：用 cargo-zigbuild 把 glibc 底线钉到 2.28（与 runner 镜像无关），
   # CI 实测超标即 fail —— 杜绝 runner 升级导致底线悄悄抬高、把老发行版排除掉。
