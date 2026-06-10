@@ -122,17 +122,15 @@ appname, version-check UA, icon names.
 
 The shipped asset's glibc floor decides which machines can be migrated at all.
 
-- **Pin the CI build base low + measure + hard-fail.** Build the release on an old
-  glibc (e.g. `ubuntu-20.04` ≈ glibc 2.31, or `cargo-zigbuild`/manylinux for
-  ≈2.28/2.27). After build, `objdump -T cui | grep GLIBC_ | sort -V | tail -1` and
-  **`exit 1` if the floor exceeds the declared target** (the current draft only
-  `echo`s it — that's a silent-regression trap when the runner image is retired).
+- **CI build base → `cargo-zigbuild` target `x86_64-unknown-linux-gnu.2.28`**
+  (LOCKED). After build, `objdump -T cui | grep GLIBC_ | sort -V | tail -1` and
+  **`exit 1` if the floor exceeds 2.28** (the current draft only `echo`s it — a
+  silent-regression trap when the runner image is retired).
 - **The preflight floor constant must be measured from the *shipped asset*,** not
   the dev binary, and set with margin (require glibc strictly above the measured
   floor).
-- **Arch:** only `x86_64` is built today. Either add an `aarch64` runner/cross
-  build before cutover, or formally leave arm64 users on Python (the preflight's
-  404-on-missing-asset already keeps them safe). **Decision needed.**
+- **Arch → x86_64 only** (LOCKED). arm64/other stay on Python forever; the
+  preflight's 404-on-missing-asset keeps them safe automatically.
 - **musl static is not cleanly feasible** (BoringSSL/boring-sys2 + cmake/bindgen is
   fragile on musl) — don't pursue it; rely on the low-glibc gnu build instead.
 - **Runtime hard requirements** the preflight must verify on the box (not just
@@ -309,32 +307,38 @@ fleet-global cleanup commit.
 
 ---
 
-## 11. Decisions only you can make (these gate implementation)
+## 11. Decisions
 
-1. **glibc floor + CI build base** — `ubuntu-20.04` (~2.31, simplest) vs
-   `cargo-zigbuild`/manylinux (~2.28/2.27, widest reach, more CI work) vs accept
-   the high `ubuntu-latest` floor (excludes most older distros).
-2. **arch scope** — add `aarch64` before cutover, or leave arm64 on Python.
-3. **binary integrity** — publish + verify a SHA256 (and/or minisign/cosign
-   signature), or ship with only the current 1 MB size floor.
-4. **disclose the swap?** — README/privacy currently say "update checks only fetch
-   VERSION"; a Rust binary pulling a ~16 MB ELF from the GitHub release CDN is a new
-   network destination. Keep fully silent, or add a one-line changelog/privacy note.
-5. **rollout % schedule + dwell + abort criteria** — concrete numbers, given no
-   telemetry (what observable trips an abort?).
-6. **version-sync mechanism** — `build.rs include_str!("../../VERSION")`
-   (recommended) vs a CI sed step.
-7. **fail-open vs fail-closed** when `migration.json` is unreachable — recommended:
-   **fail-closed for forward migration** (don't migrate) + **fail-safe for
-   rollback** (still allow restore), so the kill-switch can't be defeated by a fetch
-   failure.
-8. **Python-standby retention window** + the concrete condition for a future
-   cleanup release to delete the venv.
-9. **multi-user / root / non-Debian posture** — in scope or explicitly excluded.
+### LOCKED (2026-06-10)
+1. **glibc floor + CI build base → `cargo-zigbuild` targeting glibc 2.28.** Widest
+   reach (Debian 10, RHEL/Alma 8, Ubuntu 18.04+). Preflight floor constant = the
+   *measured* shipped-asset floor (≥ 2.28 with margin), and CI **hard-fails** if the
+   asset exceeds the target.
+2. **Arch scope → x86_64 only; arm64/other stay on Python permanently.** Preflight
+   sees the asset 404 on non-x86_64 and safely declines to migrate.
+3. **Binary integrity → publish + verify SHA256 now; signature (minisign/cosign)
+   deferred.** Release attaches `cui-x86_64-linux.sha256`; `selfupdate.rs` and the
+   migration preflight verify it before the atomic rename. (Replaces the bare 1 MB
+   size floor as the trust gate.)
+4. **Disclosure → add a one-line privacy/changelog note** that updates download the
+   binary from the GitHub release CDN. Matches the project's transparency ethos.
 
-Recommended defaults if you want to move fast: #1 zigbuild→glibc 2.28; #2 x86_64
-only (arm64 stays Python); #3 add SHA256 now, signature later; #4 one-line privacy
-note (matches the project's transparency ethos); #6 build.rs; #7 as stated.
+### Adopted recommendations (low-controversy, can revisit)
+6. **Version-sync → `build.rs` `include_str!("../../VERSION")`** so `config.rs`
+   VERSION can never drift from the root `VERSION` file.
+7. **Manifest unreachable → fail-CLOSED for forward migration** (don't migrate,
+   retry next poll) + **fail-SAFE for rollback** (still allow restore-to-Python), so
+   the kill-switch can't be defeated by a fetch failure.
+
+### Deferred to just-before-R2 (operational, not blocking the build)
+5. **Rollout % schedule + dwell + abort criteria** — concrete numbers + the
+   observable that trips an abort (no telemetry). Settle when the mechanism is built
+   and the test matrix is green.
+8. **Python-standby retention window** + the exact condition a future cleanup
+   release uses to delete the venv (per-machine, never fleet-global).
+9. **Multi-user / root / non-Debian posture** — default: **excluded** from
+   auto-migration (each `--user` install decides for its own `$HOME`; no owner/root
+   handling in preflight). Revisit if it matters.
 
 ---
 
