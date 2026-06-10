@@ -17,5 +17,16 @@ export PYTHONNOUSERSITE=1 PYTHONUNBUFFERED=1
 # 确定的系统 PATH：子进程（git / xdg-open / systemctl / systemd-run）都走系统版本，不走 conda/pyenv
 export PATH=/usr/bin:/bin:/usr/sbin:/sbin
 
+# ── 迁移语言开关（Python → Rust 无缝切换的载体）─────────────────────────────
+# 若已迁移到 Rust——哨兵文件存在、且兄弟目录里的二进制能正常 `--version`——就运行 Rust；
+# 否则照常运行 Python（永远可回落的安全分支）。二进制与哨兵都在本 git 树之外，
+# `git reset --hard` / install.sh 的 .bak 备份都碰不到；二进制跑不起来时绝不切过去。
+CUI_BIN="${HOME}/.local/share/claude-usage-indicator-bin/cui"
+CUI_SENTINEL="${HOME}/.config/claude-usage-indicator/use-rust"
+if [ -f "$CUI_SENTINEL" ] && [ -x "$CUI_BIN" ] && "$CUI_BIN" --version >/dev/null 2>&1; then
+    exec "$CUI_BIN" "$@"     # current_exe()==$CUI_BIN，与自更新替换路径天然一致
+fi
+# ────────────────────────────────────────────────────────────────────────────
+
 # 用 venv 内（由系统 Python 建的）解释器，绝对路径调用——不依赖 PATH，也无需 source activate
 exec "$DIR/venv/bin/python" "$DIR/claude_usage_indicator.py" "$@"

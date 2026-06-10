@@ -7,6 +7,7 @@ use crate::tray::CuiTray;
 use crate::{api, creds};
 use cui_core::{remote_is_newer, should_notify_bad, Raw};
 use ksni::Handle;
+use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -26,6 +27,18 @@ fn classify(msg: &str) -> &'static str {
         "http" => "http",
         "cookie" => "cookie",
         _ => "network",
+    }
+}
+
+/// 心跳：每轮循环更新 ~/.cache/<APP_ID>/alive 的 mtime。迁移后的 bash 看门狗据此判断
+/// Rust 进程是否还在正常轮询（mtime 久不更新 = 卡死/崩溃 → 看门狗恢复 Python）。
+fn touch_heartbeat() {
+    let base = std::env::var("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".cache"));
+    let dir = base.join(crate::config::APP_ID);
+    if std::fs::create_dir_all(&dir).is_ok() {
+        let _ = std::fs::write(dir.join("alive"), VERSION.as_bytes());
     }
 }
 
@@ -88,6 +101,7 @@ pub async fn run(
     let mut notified_update: Option<String> = None;
 
     loop {
+        touch_heartbeat();
         if force_creds {
             if let Ok((s, o)) = creds::load_credentials().await {
                 sk = s;
