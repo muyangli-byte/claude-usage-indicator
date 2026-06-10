@@ -32,6 +32,7 @@ fn notify_msg(status: &str, lang: &str) -> (String, String) {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn show(
     handles: &mut HashMap<&'static str, NotificationHandle>,
     channel: &'static str,
@@ -40,9 +41,13 @@ fn show(
     body: &str,
     urgency: Urgency,
     timeout: Timeout,
+    actions: &[(&str, &str)], // (key, label)：按钮；点击经 ActionInvoked 信号派发（见 listen_actions）
 ) {
     let mut n = Notification::new();
     n.appname("Claude Usage Indicator").summary(title).body(body).icon(icon).urgency(urgency).timeout(timeout);
+    for (key, label) in actions {
+        n.action(key, label);
+    }
     if let Some(h) = handles.get(channel) {
         n.id(h.id()); // 复用同 channel 的 id → 守护进程原地替换，不堆叠
     }
@@ -72,12 +77,14 @@ pub fn spawn() -> Sender<NotifyCmd> {
                     } else {
                         (Urgency::Normal, Timeout::Milliseconds(12000))
                     };
-                    show(&mut handles, "status", "dialog-warning", &title, &body, u, t);
+                    let open_label = if lang == "zh" { "打开用量页" } else { "Open page" };
+                    show(&mut handles, "status", "dialog-warning", &title, &body, u, t, &[("cui-open", open_label)]);
                 }
                 NotifyCmd::Update { ver, lang } => {
                     let title = if lang == "zh" { "发现新版本" } else { "Update available" };
                     let body = format!("v{} → v{}", crate::config::VERSION, ver);
-                    show(&mut handles, "update", "software-update-available", title, &body, Urgency::Critical, Timeout::Never);
+                    let upd_label = if lang == "zh" { "立即更新" } else { "Update now" };
+                    show(&mut handles, "update", "software-update-available", title, &body, Urgency::Critical, Timeout::Never, &[("cui-update", upd_label)]);
                 }
                 NotifyCmd::Updated { ver, lang } => {
                     let (title, body) = if lang == "zh" {
@@ -86,7 +93,7 @@ pub fn spawn() -> Sender<NotifyCmd> {
                         ("Updated".to_string(), format!("Now running v{ver}"))
                     };
                     // 复用 update channel → 顶掉「发现新版本」横幅（同进程内），瞬时展示
-                    show(&mut handles, "update", "emblem-default", &title, &body, Urgency::Normal, Timeout::Milliseconds(8000));
+                    show(&mut handles, "update", "emblem-default", &title, &body, Urgency::Normal, Timeout::Milliseconds(8000), &[]);
                 }
                 NotifyCmd::Close(ch) => {
                     if let Some(h) = handles.remove(ch) {
@@ -97,4 +104,49 @@ pub fn spawn() -> Sender<NotifyCmd> {
         }
     });
     tx
+}
+
+/// 监听 org.freedesktop.Notifications 的 ActionInvoked 信号，按 action key 派发通知上的按钮点击。
+/// 纯 zbus，不依赖 notify-rust 的 wait_for_action（那会和按 channel 合并/关闭抢句柄）。在 tokio 主运行时跑。
+pub async fn listen_actions() {
+    use futures_util::StreamExt;
+    let conn = match zbus::Connection::session().await {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("[notify] action listener: {e}");
+            return;
+        }
+    };
+    let proxy = match zbus::Proxy::new(
+        &conn,
+        "org.freedesktop.Notifications",
+        "/org/freedesktop/Notifications",
+        "org.freedesktop.Notifications",
+    )
+    .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("[notify] action listener: {e}");
+            return;
+        }
+    };
+    let mut stream = match proxy.receive_signal("ActionInvoked").await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("[notify] action listener: {e}");
+            return;
+        }
+    };
+    while let Some(msg) = stream.next().await {
+        if let Ok((_id, action)) = msg.body().deserialize::<(u32, String)>() {
+            match action.as_str() {
+                "cui-open" => {
+                    let _ = std::process::Command::new("xdg-open").arg(crate::config::USAGE_PAGE_URL).spawn();
+                }
+                "cui-update" => crate::selfupdate::spawn_detached(),
+                _ => {}
+            }
+        }
+    }
 }

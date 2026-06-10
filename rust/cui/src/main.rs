@@ -91,6 +91,8 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
 
     // 常驻订阅 ntfy：发版即时触发版本复核（断线自重连，不影响每天兜底）
     tokio::spawn(ntfy::subscribe(client.clone(), check_update.clone()));
+    // 监听通知上的按钮点击（Open page / Update now），经 D-Bus ActionInvoked 信号派发
+    tokio::spawn(notifier::listen_actions());
 
     // 每秒重绘：倒计时 / “Ns ago” / 顶栏标签平滑走动（ksni 按哈希去重，未变不发 D-Bus）。
     {

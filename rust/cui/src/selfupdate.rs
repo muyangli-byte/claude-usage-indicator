@@ -15,6 +15,21 @@ fn breadcrumb_path() -> PathBuf {
     base.join(APP_ID).join("updated")
 }
 
+/// 触发自更新：在独立 systemd 瞬时单元里跑 `cui --self-update`，这样它重启本服务时不会把更新进程一起杀掉。
+/// 供菜单 "Update now" 和通知上的 "Update now" 按钮共用。
+pub fn spawn_detached() {
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = exe.to_string_lossy().into_owned();
+        if std::process::Command::new("systemd-run")
+            .args(["--user", "--collect", &exe, "--self-update"])
+            .spawn()
+            .is_err()
+        {
+            let _ = std::process::Command::new(&exe).arg("--self-update").spawn();
+        }
+    }
+}
+
 /// 新进程开机调用：若上次刚自更新过，返回新版本号并清掉面包屑。
 pub fn consume_breadcrumb() -> Option<String> {
     let p = breadcrumb_path();

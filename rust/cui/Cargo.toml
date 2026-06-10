@@ -8,6 +8,7 @@ aes = "0.9.1"
 anyhow = "1.0.102"
 cbc = "0.2.1"
 cui-core = { path = "../core" }
+futures-util = "0.3" # zbus 信号流 .next()（通知动作按钮监听）
 glob = "0.3.3"
 hmac = "0.13.0"
 ksni = { path = "../ksni" }   # fork：加了 XAyatanaLabel（顶栏内联标签，无 GTK）

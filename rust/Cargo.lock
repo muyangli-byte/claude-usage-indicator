@@ -811,6 +811,7 @@ dependencies = [
  "anyhow",
  "cbc 0.2.1",
  "cui-core",
+ "futures-util",
  "glob",
  "hmac 0.13.0",
  "ksni",
