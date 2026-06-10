@@ -4,8 +4,32 @@
 use crate::config::{APP_ID, SERVICE, VERSION};
 use crate::api;
 use cui_core::remote_is_newer;
+use sha2::{Digest, Sha256};
 use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
+
+/// 校验下载的二进制 SHA256 是否匹配 release 附带的 .sha256（完整性，迁移决策 §11.3）。
+/// fail-closed：取不到校验和 / 不匹配都返回 false（绝不安装未经校验的二进制）。
+async fn sha256_ok(client: &wreq::Client, bin_url: &str, bytes: &[u8]) -> bool {
+    let sha_url = format!("{bin_url}.sha256");
+    let txt = match client.get(&sha_url).send().await {
+        Ok(r) if r.status().as_u16() == 200 => r.text().await.unwrap_or_default(),
+        _ => {
+            eprintln!("self-update: checksum unavailable, refusing to install");
+            return false;
+        }
+    };
+    let expected = txt.split_whitespace().next().unwrap_or("").to_lowercase();
+    let mut h = Sha256::new();
+    h.update(bytes);
+    let actual = h.finalize().iter().map(|b| format!("{b:02x}")).collect::<String>();
+    if expected.is_empty() || actual != expected {
+        eprintln!("self-update: sha256 mismatch (want {expected}, got {actual}), refusing");
+        return false;
+    }
+    println!("self-update: sha256 verified");
+    true
+}
 
 /// 面包屑：自更新进程写下新版本号；重启后的新进程开机读到 → 弹「已更新」→ 删除。
 fn breadcrumb_path() -> PathBuf {
@@ -87,6 +111,9 @@ pub async fn cmd_self_update() -> i32 {
     };
     if bytes.len() < 1_000_000 {
         eprintln!("self-update: asset too small ({} bytes), aborting", bytes.len());
+        return 1;
+    }
+    if !sha256_ok(&client, &url, &bytes).await {
         return 1;
     }
 
