@@ -1,8 +1,9 @@
-//! cui rust-dev 入口：自读凭证 → ksni 托盘（含 XAyatanaLabel 内联标签）→ 自适应轮询。
-//! 与 Python 正式版并存（独立 APP_ID）。凭证/拉取/托盘全自包含，无 GTK、单二进制。
+//! cui rust-dev 入口：自读凭证 → ksni 托盘（含 XAyatanaLabel 内联标签）→ 自适应轮询 + 智能通知。
+//! 与 Python 正式版并存（独立 APP_ID）。凭证/拉取/托盘/通知全自包含，无 GTK、单二进制。
 mod api;
 mod config;
 mod creds;
+mod notifier;
 mod poller;
 mod tray;
 
@@ -25,18 +26,22 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     let client = api::client()?;
+    let lang = creds::load_lang();
     let refresh = Arc::new(Notify::new());
+    let show_error = Arc::new(Notify::new());
+    let notify_tx = notifier::spawn(); // 通知线程
 
     let tray = tray::CuiTray {
         status: "init".into(),
-        lang: creds::load_lang(),
+        lang: lang.clone(),
         refresh: Some(refresh.clone()),
+        show_error: Some(show_error.clone()),
         ..Default::default()
     };
     let handle = tray.spawn().await?;
     println!("[rust-dev] ksni 托盘已注册 (id={})", config::APP_ID);
 
-    // 每秒重绘：让倒计时 / “Ns ago” / 顶栏标签平滑走动（ksni 按哈希去重，未变化不发 D-Bus）。
+    // 每秒重绘：倒计时 / “Ns ago” / 顶栏标签平滑走动（ksni 按哈希去重，未变不发 D-Bus）。
     {
         let h = handle.clone();
         tokio::spawn(async move {
@@ -47,7 +52,6 @@ async fn main() -> anyhow::Result<()> {
         });
     }
 
-    // 自适应轮询（阻塞驱动；Refresh now 通过 refresh 唤醒）。
-    poller::run(handle, client, refresh, sk, org).await;
+    poller::run(handle, client, refresh, show_error, notify_tx, lang, sk, org).await;
     Ok(())
 }

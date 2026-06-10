@@ -9,4 +9,5 @@ pub const USAGE_PAGE_URL: &str = "https://claude.ai/new#settings/usage";
 pub const POLL_FAST_S: u64 = 5; // 数据在变时
 pub const POLL_SLOW_S: u64 = 90; // 长时间无变化退避封顶
 pub const POLL_ERROR_S: u64 = 60; // 出错重试
+pub const RENOTIFY_BAD_S: f64 = 1800.0; // 持续异常每 30 分钟再提醒
 pub const UPDATE_CHECK_S: u64 = 86400; // 版本检查间隔（兜底）

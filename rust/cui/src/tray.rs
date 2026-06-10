@@ -32,6 +32,7 @@ pub struct CuiTray {
     pub lang: String, // "en"/"zh"（为后续通知用）
     pub received_at: Option<Instant>,
     pub refresh: Option<Arc<Notify>>, // "Refresh now"/"Check for updates" → 唤醒轮询
+    pub show_error: Option<Arc<Notify>>, // "Show error details" → 让 poller 弹当前故障通知
 }
 
 impl CuiTray {
@@ -154,8 +155,17 @@ impl Tray for CuiTray {
             self.status_label(),
             self.ago()
         )));
-        if !self.healthy() && !self.error.is_empty() {
-            items.push(dim(format!("⚠️ {}", self.error)));
+        if !self.healthy() {
+            // 出故障：点开把具体故障以通知弹出（对齐 Python "Show error details"）
+            let se = self.show_error.clone();
+            items.push(act(
+                "⚠️  Show error details".into(),
+                Box::new(move |_| {
+                    if let Some(n) = &se {
+                        n.notify_one();
+                    }
+                }),
+            ));
         }
         items.push(MenuItem::Separator);
 
