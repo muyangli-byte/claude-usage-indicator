@@ -130,7 +130,10 @@ pub async fn cmd_doctor(lang: &str) -> i32 {
         return 1;
     }
     println!();
-    line("用拿到的凭证试拉一次用量……", "Trying a live usage fetch…");
+    line(
+        "用拿到的凭证试拉一次用量，确认 sessionKey 真的能用……",
+        "Trying a live usage fetch to confirm the sessionKey actually works…",
+    );
     let client = match api::client() {
         Ok(c) => c,
         Err(e) => {
@@ -145,11 +148,15 @@ pub async fn cmd_doctor(lang: &str) -> i32 {
                 &format!("  ✓ Success! Current session {}, All models {}", pct(r.five_hour_util), pct(r.seven_day_util)),
             );
             println!();
-            line("✓ 一切就绪。", "✓ All set.");
+            line("✓ 一切就绪，可以安装。", "✓ All set — ready to install.");
             0
         }
         Err(e) => {
             line(&format!("  ✗ 拉取失败：{e}"), &format!("  ✗ fetch failed: {e}"));
+            line(
+                "  （sessionKey 可能已过期：请在浏览器重新登录 claude.ai 再试）",
+                "  (sessionKey may be expired: re-login to claude.ai and retry)",
+            );
             1
         }
     }

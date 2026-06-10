@@ -34,6 +34,7 @@ pub struct CuiTray {
     pub refresh: Option<Arc<Notify>>, // "Refresh now" → 唤醒轮询（并强制重读 cookie）
     pub show_error: Option<Arc<Notify>>, // "Show error details" → 让 poller 弹当前故障通知
     pub check_update: Option<Arc<Notify>>, // "Check for updates" → 立即查 GitHub 版本
+    pub consecutive: u32,                 // 连续失败次数（Status 行 >1 时显示 (xN)，对齐 Python）
 }
 
 impl CuiTray {
@@ -58,25 +59,31 @@ impl CuiTray {
             None => "--".into(),
         }
     }
-    /// 顶栏内联文字（XAyatanaLabel）+ tooltip 标题。对齐 Python short_label。
+    /// 顶栏内联文字（XAyatanaLabel）+ tooltip 标题。逐字对齐 Python model.short_label：
+    /// 取数前只有 auth/cloudflare/schema/cookie 报警，其余一律中性 waiting；取数后 status!=ok 即加 ⚠。
     fn summary(&self) -> String {
-        match &self.raw {
-            Some(r) if self.received_at.is_some() => {
-                let base = format!(
-                    "Cur {} {} | All {} {}",
-                    pct(r.five_hour_util),
-                    fmt_countdown(r.five_hour_reset),
-                    pct(r.seven_day_util),
-                    fmt_resetday(r.seven_day_reset),
-                );
-                if self.healthy() {
-                    base
-                } else {
-                    format!("⚠ {base}")
-                }
+        if self.received_at.is_none() {
+            return match self.status.as_str() {
+                "auth" => "⚠ Claude: login expired",
+                "cloudflare" => "⚠ Cloudflare blocked",
+                "schema" => "⚠ API schema changed",
+                "cookie" => "⚠ cookie read failed",
+                _ => "Claude usage waiting...",
             }
-            _ if self.healthy() => "Claude usage waiting...".into(), // 对齐 Python 首屏文案
-            _ => format!("⚠ {}", self.status_label()),
+            .to_string();
+        }
+        let r = self.raw.clone().unwrap_or_default();
+        let base = format!(
+            "Cur {} {} | All {} {}",
+            pct(r.five_hour_util),
+            fmt_countdown(r.five_hour_reset),
+            pct(r.seven_day_util),
+            fmt_resetday(r.seven_day_reset),
+        );
+        if self.status == "ok" {
+            base
+        } else {
+            format!("⚠ {base}")
         }
     }
     fn feedback_url(&self) -> String {
@@ -151,9 +158,10 @@ impl Tray for CuiTray {
             items.push(dim(format!("{}  {:>4}", bar(r.opus_util, 24), pct(r.opus_util))));
         }
         items.push(dim(format!(
-            "Status: {}{} | Last updated: {}",
+            "Status: {}{}{} | Last updated: {}",
             if self.healthy() { "" } else { "⚠️ " },
             self.status_label(),
+            if !self.healthy() && self.consecutive > 1 { format!(" (x{})", self.consecutive) } else { String::new() },
             self.ago()
         )));
         if !self.healthy() {

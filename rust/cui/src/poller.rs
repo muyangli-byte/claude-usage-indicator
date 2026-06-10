@@ -113,11 +113,16 @@ pub async fn run(
             last_snap = Some(snap(r));
         }
 
-        let (st, er, rw) = (status.clone(), error.clone(), raw.clone());
+        // 先算连续失败次数：托盘 Status 行 >1 时显示 (xN)（对齐 Python），通知策略也用它。
+        let bad = status != "ok" && status != "init";
+        consecutive = if bad { consecutive + 1 } else { 0 };
+
+        let (st, er, rw, cons) = (status.clone(), error.clone(), raw.clone(), consecutive);
         handle
             .update(move |t: &mut CuiTray| {
                 t.status = st;
                 t.error = er;
+                t.consecutive = cons;
                 if let Some(r) = rw {
                     t.raw = Some(r);
                     t.received_at = Some(Instant::now());
@@ -126,8 +131,6 @@ pub async fn run(
             .await;
 
         // —— 通知策略 ——
-        let bad = status != "ok" && status != "init";
-        consecutive = if bad { consecutive + 1 } else { 0 };
         if !bad {
             if !notified_status.is_empty() {
                 let _ = notify_tx.send(NotifyCmd::Close("status")); // 恢复即关
