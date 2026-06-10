@@ -89,7 +89,7 @@ curl -fsSL https://raw.githubusercontent.com/muyangli-byte/claude-usage-indicato
 2. 用 [`curl_cffi`](https://github.com/lexiforest/curl_cffi) 伪装 Chrome 的 TLS 指纹，直连 claude.ai 的内部用量 **JSON 接口**（普通 `requests`/`curl` 会被 Cloudflare 在指纹层拦截）。
 3. 解析 JSON、更新 GTK 顶栏。**自适应轮询**：用量在变时快轮询（约 5s）≈ 准实时；长时间无变化自动退避（最高 90s）。每次轮询兼做健康检查，出问题就弹通知并标 ⚠️。
 
-因为读的是 JSON 接口而非抓网页 DOM，claude.ai 改版网页不影响本工具。`sessionKey` 只在内存中使用、**不写入任何文件**；不上报任何遥测，请求只发往 `claude.ai`，更新检查只拉本仓库的 `VERSION`。
+因为读的是 JSON 接口而非抓网页 DOM，claude.ai 改版网页不影响本工具。`sessionKey` 只在内存中使用、**不写入任何文件**；不上报任何遥测，用量请求只发往 `claude.ai`；更新检查拉取本仓库的 `VERSION` 与迁移清单 `migration.json`；一次性的 Python→Rust 升级会从本仓库的 GitHub release 下载预编译二进制（并校验 SHA256）。
 
 ## License
 
@@ -192,7 +192,7 @@ When the top bar shows ⚠️, check the **Status** row or the notification:
 2. [`curl_cffi`](https://github.com/lexiforest/curl_cffi) impersonates Chrome's TLS fingerprint and calls claude.ai's internal usage **JSON API** directly (plain `requests`/`curl` get blocked by Cloudflare at the fingerprint layer).
 3. Parse the JSON and update the GTK top bar. **Adaptive polling:** fast (~5s) while the numbers change ≈ near‑real‑time, backing off (up to 90s) when idle. Every poll doubles as a health check and pops a notification with a ⚠️ on problems.
 
-Because it reads a JSON API rather than scraping the page, claude.ai redesigning its web UI doesn't affect this tool. `sessionKey` is used in memory only and **never written to any file**; no telemetry, requests only go to `claude.ai`, and update checks only fetch this repo's `VERSION`.
+Because it reads a JSON API rather than scraping the page, claude.ai redesigning its web UI doesn't affect this tool. `sessionKey` is used in memory only and **never written to any file**; no telemetry; usage requests go only to `claude.ai`; update checks fetch this repo's `VERSION` and a migration manifest (`migration.json`); and the one-time Python→Rust upgrade downloads a prebuilt binary from this repo's GitHub releases (verified by SHA256).
 
 ## License
 

@@ -22,6 +22,8 @@ OWNER, REPO = "muyangli-byte", "claude-usage-indicator"
 SERVICE = "claude-usage-indicator.service"
 
 HOME = Path.home()
+INSTALL_DIR = HOME / ".local/share/claude-usage-indicator"   # Python 树（含 packaging/ 看门狗单元）
+SERVICE_DIR = HOME / ".config/systemd/user"
 BIN_DIR = HOME / ".local/share/claude-usage-indicator-bin"   # git 树之外
 CUI_BIN = BIN_DIR / "cui"
 CUI_NEW = BIN_DIR / "cui.new"
@@ -168,10 +170,36 @@ def sni_watcher_present() -> bool:
         return False
 
 
+def ensure_watchdog() -> bool:
+    """把回退看门狗装好并 enable（幂等）。经「Update now」拿到桥接版的客户端不跑 install.sh，
+    所以迁移前在这里自装，保证迁移后一定有「崩溃/卡死/kill-switch → 拉回 Python」的安全网。"""
+    pkg = INSTALL_DIR / "packaging"
+    SERVICE_DIR.mkdir(parents=True, exist_ok=True)
+    for unit in ("claude-usage-indicator-watchdog.service", "claude-usage-indicator-watchdog.timer"):
+        src = pkg / unit
+        if not src.exists():
+            log(f"watchdog unit {unit} missing in packaging — cannot self-install")
+            return False
+        (SERVICE_DIR / unit).write_text(src.read_text().replace("__INSTALL_DIR__", str(INSTALL_DIR)))
+    subprocess.run(["systemctl", "--user", "daemon-reload"], capture_output=True)
+    r = subprocess.run(["systemctl", "--user", "enable", "--now",
+                        "claude-usage-indicator-watchdog.timer"], capture_output=True)
+    if r.returncode != 0:
+        log("watchdog timer enable failed")
+        return False
+    log("watchdog installed + enabled")
+    return True
+
+
 def do_swap(dry: bool) -> int:
     if dry:
-        log("DRY-RUN: would now: disable --now Python service → mv cui.new→cui → write sentinel → "
-            "enable --now (run.sh execs Rust). Python tree kept for rollback.")
+        log("DRY-RUN: would install+enable the restore-watchdog, then disable --now Python service → "
+            "mv cui.new→cui → write sentinel → enable --now (run.sh execs Rust). Python tree kept for rollback.")
+        _rm(CUI_NEW)
+        return 0
+    # 安全网先行：装不上看门狗就绝不换栈（没有回退手段宁可留在 Python）。
+    if not ensure_watchdog():
+        log("watchdog self-install failed — abort swap, stay Python (no rollback net)")
         _rm(CUI_NEW)
         return 0
     log("swap: disabling Python service (stop+disable so Restart=always can't relaunch)…")
