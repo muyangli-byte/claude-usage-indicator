@@ -45,6 +45,50 @@ fn profile_cookie_files(bases: &[&str]) -> Vec<PathBuf> {
     out
 }
 
+/// 从 cookie 路径推出 profile 名（Default / Profile 3…），兼容 Network/ 子目录。对齐 Python _profile_label。
+fn profile_label(p: &Path) -> String {
+    let mut dir = p.parent();
+    if dir.and_then(|d| d.file_name()).is_some_and(|n| n == "Network") {
+        dir = dir.and_then(|d| d.parent());
+    }
+    dir.and_then(|d| d.file_name())
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
+/// 只看某 profile 是否有 claude.ai sessionKey + 加密前缀（v10/v11），不解密、不打印密钥。对齐 Python _cookie_presence。
+fn cookie_presence(path: &Path) -> Option<String> {
+    let tmp = std::env::temp_dir().join(format!("cui-presence-{}.db", std::process::id()));
+    if std::fs::copy(path, &tmp).is_err() {
+        return None;
+    }
+    let mut out = None;
+    if let Ok(conn) = rusqlite::Connection::open_with_flags(&tmp, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY) {
+        if let Ok(ev) = conn.query_row(
+            "SELECT encrypted_value FROM cookies WHERE name='sessionKey' AND host_key LIKE '%claude.ai'",
+            [],
+            |r| r.get::<_, Vec<u8>>(0),
+        ) {
+            if !ev.is_empty() {
+                out = Some(String::from_utf8_lossy(&ev[..ev.len().min(3)]).into_owned());
+            }
+        }
+    }
+    let _ = std::fs::remove_file(&tmp);
+    out
+}
+
+/// 扫描所有浏览器 profile，返回 (浏览器, profile 名, 加密前缀 or None)。供 --doctor 用。
+pub fn scan_profiles() -> Vec<(&'static str, String, Option<String>)> {
+    let mut out = Vec::new();
+    for (app, bases) in BROWSERS {
+        for f in profile_cookie_files(bases) {
+            out.push((*app, profile_label(&f), cookie_presence(&f)));
+        }
+    }
+    out
+}
+
 fn read_config() -> serde_json::Value {
     std::fs::read_to_string(home().join(".config/claude-usage-indicator/config.json"))
         .ok()
