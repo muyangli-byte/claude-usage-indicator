@@ -109,7 +109,7 @@ def fetch_manifest():
         return None
 
 
-def preflight(arch: str, want_sha: bool = True) -> bool:
+def preflight(arch: str) -> bool:
     """下载本架构二进制到 cui.new、校验 SHA256、chmod、跑 `--version`。证明它能在本机跑。"""
     asset = f"https://github.com/{OWNER}/{REPO}/releases/latest/download/cui-{arch}-linux"
     try:
