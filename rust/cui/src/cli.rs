@@ -86,6 +86,28 @@ pub async fn cmd_doctor(lang: &str) -> i32 {
     }
     println!();
 
+    // 钥匙环：GNOME 用 Secret Service（隐式）；KDE 报告 KWallet daemon/解锁状态，定位"钱包锁着"这一最常见失败。
+    match crate::kwallet::kwallet_status().await {
+        Some((d, enabled, open)) => {
+            let yn = |b: bool| if b { "✓" } else { "✗" };
+            line(
+                &format!("KWallet：{d}（启用 {} / 已解锁 {}）", yn(enabled), yn(open)),
+                &format!("KWallet: {d} (enabled {} / unlocked {})", yn(enabled), yn(open)),
+            );
+            if enabled && !open {
+                line(
+                    "  · 钱包锁着 → 读不到钥匙（本程序绝不弹解锁框）。解锁 KWallet 后重试。",
+                    "  · Wallet is locked → can't read the key (we never pop the unlock dialog). Unlock KWallet and retry.",
+                );
+            }
+        }
+        None => line(
+            "KWallet：未运行（走 GNOME 钥匙环或 config.json）",
+            "KWallet: not running (using GNOME keyring or config.json)",
+        ),
+    }
+    println!();
+
     let (sk, org) = creds::load_credentials().await.unwrap_or((String::new(), String::new()));
     let (sk_ok, org_ok) = (valid_sk(&sk), valid_org(&org));
     line(

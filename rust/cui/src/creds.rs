@@ -1,6 +1,6 @@
-//! 凭证读取（对齐 Python cui/credentials.py 的 GNOME 路径；KWallet 待补）：
-//! config.json 覆盖 → 遍历浏览器 profile，从 Secret Service 取 "Safe Storage" 钥匙、自解密 cookie。
-//! 绝不调 unlock()（只用已解锁项），不弹解锁框；用 cui_core 的形状校验拒绝错钥匙解出的乱码。
+//! 凭证读取（对齐 Python cui/credentials.py）：config.json 覆盖 → 遍历浏览器 profile，
+//! 从 Secret Service(GNOME) 或 KWallet(KDE) 取 "Safe Storage" 钥匙、自解密 cookie。
+//! 绝不调 unlock()/open()（只用已解锁钱包），不弹解锁框；用 cui_core 的形状校验拒绝错钥匙解出的乱码。
 use aes::cipher::{block_padding::Pkcs7, BlockModeDecrypt, KeyIvInit};
 use anyhow::{anyhow, Result};
 use cui_core::{valid_org, valid_sk};
@@ -11,12 +11,13 @@ use std::path::{Path, PathBuf};
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
-// (Secret Service application 名, cookie 库基目录)；每个基目录下试 <profile>/Cookies 与 <profile>/Network/Cookies
-const BROWSERS: &[(&str, &[&str])] = &[
-    ("chrome", &["~/.config/google-chrome", "~/.var/app/com.google.Chrome/config/google-chrome"]),
-    ("chromium", &["~/.config/chromium", "~/snap/chromium/common/chromium", "~/.var/app/org.chromium.Chromium/config/chromium"]),
-    ("brave", &["~/.config/BraveSoftware/Brave-Browser", "~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser"]),
-    ("microsoft-edge", &["~/.config/microsoft-edge", "~/.var/app/com.microsoft.Edge/config/microsoft-edge"]),
+// (Secret Service application 名, KWallet 产品名, cookie 库基目录)；
+// 每个基目录下试 <profile>/Cookies 与 <profile>/Network/Cookies。KWallet 条目为 "<kw> Keys"/"<kw> Safe Storage"。
+const BROWSERS: &[(&str, &str, &[&str])] = &[
+    ("chrome", "Chrome", &["~/.config/google-chrome", "~/.var/app/com.google.Chrome/config/google-chrome"]),
+    ("chromium", "Chromium", &["~/.config/chromium", "~/snap/chromium/common/chromium", "~/.var/app/org.chromium.Chromium/config/chromium"]),
+    ("brave", "Brave", &["~/.config/BraveSoftware/Brave-Browser", "~/snap/brave/common/.config/BraveSoftware/Brave-Browser", "~/.var/app/com.brave.Browser/config/BraveSoftware/Brave-Browser"]),
+    ("microsoft-edge", "Microsoft Edge", &["~/.config/microsoft-edge", "~/.var/app/com.microsoft.Edge/config/microsoft-edge"]),
 ];
 
 fn home() -> PathBuf {
@@ -81,7 +82,7 @@ fn cookie_presence(path: &Path) -> Option<String> {
 /// 扫描所有浏览器 profile，返回 (浏览器, profile 名, 加密前缀 or None)。供 --doctor 用。
 pub fn scan_profiles() -> Vec<(&'static str, String, Option<String>)> {
     let mut out = Vec::new();
-    for (app, bases) in BROWSERS {
+    for (app, _kw, bases) in BROWSERS {
         for f in profile_cookie_files(bases) {
             out.push((*app, profile_label(&f), cookie_presence(&f)));
         }
@@ -208,16 +209,24 @@ pub async fn load_credentials() -> Result<(String, String)> {
 
     let ss = SecretService::connect(EncryptionType::Plain).await.ok();
     let mut cookie_seen = false;
-    for (app, bases) in BROWSERS {
+    for (app, kw, bases) in BROWSERS {
         let files = profile_cookie_files(bases);
         if files.is_empty() {
             continue;
         }
         cookie_seen = true;
-        let pw = match &ss {
+        // 钥匙来源：GNOME Secret Service 优先；拿不到（KDE / 无 GNOME 钥匙环）则回退直查 KWallet。
+        let mut pw = match &ss {
             Some(s) => safe_storage_key(s, app).await.unwrap_or_default(),
             None => Vec::new(),
         };
+        if pw.is_empty() {
+            if let Some(k) =
+                crate::kwallet::kwallet_password(&format!("{kw} Keys"), &format!("{kw} Safe Storage")).await
+            {
+                pw = k.into_bytes();
+            }
+        }
         for f in files {
             let (csk, corg) = read_creds_from_db(&f, &pw);
             if sk.is_none() {

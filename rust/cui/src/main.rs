@@ -4,6 +4,7 @@ mod api;
 mod cli;
 mod config;
 mod creds;
+mod kwallet;
 mod notifier;
 mod ntfy;
 mod poller;
