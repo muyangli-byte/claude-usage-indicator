@@ -227,9 +227,11 @@ fn more_panel(
     let (w, bh, gap, grp) = (380, 34, 8, 12);
     let x = 16;
     let bw = w - 2 * x;
-    let line_h = 19;
+    let line_h = 20;
+    let info_y = 12;
     let info_h = lines.len() as i32 * line_h;
-    let top = 12 + info_h + 12; // 信息块 + 分隔线之后按钮起点
+    let sep_y = info_y + info_h + 12; // 文本块底部留 12px 再画分隔线,避免 Status 行贴住分隔线/按钮
+    let top = sep_y + 14; // 首个按钮在分隔线下方 14px
     let h = top + n * (bh + gap) + 2 * grp + 8;
 
     let (sw, sh) = fltk::app::screen_size();
@@ -238,13 +240,13 @@ fn more_panel(
 
     // 顶部用量进度条:与托盘菜单同样的文本(bar()+pct()),用默认 sans(=Noto Sans CJK SC)渲染,贴近托盘菜单;
     // 灰色仿菜单 disabled 行。方块字符在该字体里等宽连续,条形整齐。
-    let mut info = Frame::new(x, 10, bw, info_h, None);
+    let mut info = Frame::new(x, info_y, bw, info_h, None);
     info.set_label(&lines.join("\n"));
     info.set_label_size(14);
     info.set_label_color(Color::from_rgb(0x44, 0x47, 0x42));
     info.set_align(Align::Left | Align::Top | Align::Inside);
     info.set_frame(FrameType::NoBox);
-    let mut sep = Frame::new(x, 10 + info_h + 4, bw, 1, None);
+    let mut sep = Frame::new(x, sep_y, bw, 1, None);
     sep.set_frame(FrameType::FlatBox);
     sep.set_color(Color::from_rgb(0xd6, 0xd3, 0xce));
 
