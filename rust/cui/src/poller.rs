@@ -10,7 +10,7 @@ use ksni::Handle;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use wreq::Client;
@@ -95,6 +95,7 @@ pub async fn run(
     alert_thr: Arc<AtomicU8>,
     ui_tx: Sender<crate::ui::UiCmd>,
     lang_zh: Arc<AtomicBool>, // 通知语言(共享):菜单里切换即时生效,无需重启
+    lines_shared: Arc<Mutex<Vec<String>>>, // 取数后立即写,弹窗据此低延迟刷新(不必等 1s 定时器)
     mut sk: String,
     mut org: String,
 ) {
@@ -142,6 +143,7 @@ pub async fn run(
         consecutive = if bad { consecutive + 1 } else { 0 };
 
         let (st, er, rw, cons) = (status.clone(), error.clone(), raw.clone(), consecutive);
+        let ls = lines_shared.clone();
         handle
             .update(move |t: &mut CuiTray| {
                 t.status = st;
@@ -150,6 +152,10 @@ pub async fn run(
                 if let Some(r) = rw {
                     t.raw = Some(r);
                     t.received_at = Some(Instant::now());
+                }
+                // 取数即写共享态 → 弹窗下一次(0.25s)轮询即可见,不必等每秒定时器
+                if let Ok(mut g) = ls.lock() {
+                    *g = t.usage_lines();
                 }
             })
             .await;

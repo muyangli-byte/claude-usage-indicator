@@ -351,24 +351,27 @@ fn more_panel(
         _ => false,
     });
 
-    // 用量行随托盘一起动:窗开着时每秒从共享态刷新(倒计时走字、新一轮轮询的数值)。行数变了才跳过(留待重开)。
+    // 用量行随托盘一起动:窗开着时每 0.25s 从共享态刷新(倒计时走字、Refresh 后低延迟反映新数据)。
+    // 只在文本变了才重绘(避免每秒空刷)。行数变了跳过(留待重开)。
     {
         let mut frames = info_frames.clone();
         let ls = lines_shared.clone();
         let win_t = win.clone();
-        fltk::app::add_timeout3(1.0, move |handle| {
+        fltk::app::add_timeout3(0.25, move |handle| {
             if !win_t.shown() {
                 return; // 窗关了就停,不再 re-arm
             }
             if let Ok(g) = ls.lock() {
                 if g.len() == frames.len() {
                     for (f, ln) in frames.iter_mut().zip(g.iter()) {
-                        f.set_label(ln);
-                        f.redraw();
+                        if f.label() != *ln {
+                            f.set_label(ln);
+                            f.redraw();
+                        }
                     }
                 }
             }
-            fltk::app::repeat_timeout3(1.0, handle);
+            fltk::app::repeat_timeout3(0.25, handle);
         });
     }
     win

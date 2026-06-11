@@ -211,6 +211,6 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
     }
 
     poller::run(handle, client, refresh, show_error, check_update, notify_tx,
-                alert_enabled, alert_threshold, ui_tx, lang_zh, sk, org).await;
+                alert_enabled, alert_threshold, ui_tx, lang_zh, lines_shared, sk, org).await;
     Ok(())
 }
