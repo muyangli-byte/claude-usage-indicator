@@ -225,17 +225,16 @@ fn more_panel(
     lines_shared: Arc<Mutex<Vec<String>>>,
     tx: Sender<UiCmd>,
 ) -> Window {
-    let n_info = lines.len(); // 初始行数:定窗高/布局;实时刷新时只在行数一致时换文本,避免溢出错位
-    // 动作按钮数(refresh,[update],check,open,feedback | lang,alert | about,quit/uninstall,close) + 顶部信息行
+    // 动作按钮数(refresh,[update],check,open,feedback | lang,alert | about,quit/uninstall,close)
     let n: i32 = 4 + i32::from(update.is_some()) + 2 + 3;
     // 窗宽要容下 24 格进度条 + 右侧百分比(否则百分比被截掉),与托盘菜单一致
     let (w, bh, gap, grp) = (440, 34, 8, 12);
     let x = 16;
     let bw = w - 2 * x;
-    let line_h = 20;
-    let info_y = 12;
+    let line_h = 24; // 每行行高:贴近托盘菜单的菜单行高(multiline 单帧那种紧凑行距太挤)
+    let info_y = 10;
     let info_h = lines.len() as i32 * line_h;
-    let sep_y = info_y + info_h + 12; // 文本块底部留 12px 再画分隔线,避免 Status 行贴住分隔线/按钮
+    let sep_y = info_y + info_h + 8; // 文本块底部留白再画分隔线
     let top = sep_y + 14; // 首个按钮在分隔线下方 14px
     let h = top + n * (bh + gap) + 2 * grp + 8;
 
@@ -243,14 +242,18 @@ fn more_panel(
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
     win.set_label("Claude usage");
 
-    // 顶部用量进度条:与托盘菜单同样的文本(bar()+pct()),用默认 sans(=Noto Sans CJK SC)渲染,贴近托盘菜单;
-    // 灰色仿菜单 disabled 行。方块字符在该字体里等宽连续,条形整齐。
-    let mut info = Frame::new(x, info_y, bw, info_h, None);
-    info.set_label(&lines.join("\n"));
-    info.set_label_size(13);
-    info.set_label_color(Color::from_rgb(0x44, 0x47, 0x42));
-    info.set_align(Align::Left | Align::Top | Align::Inside);
-    info.set_frame(FrameType::NoBox);
+    // 顶部用量行:与托盘菜单同样的文本(bar()+pct())。每行单独一个等高 Frame、垂直居中,行高/间距贴近
+    // 托盘菜单的菜单行(比 multiline 单帧的字体固定行距更接近)。灰色仿菜单 disabled 行;默认 sans 渲染方块条。
+    let mut info_frames: Vec<Frame> = Vec::with_capacity(lines.len());
+    for (i, ln) in lines.iter().enumerate() {
+        let mut f = Frame::new(x, info_y + i as i32 * line_h, bw, line_h, None);
+        f.set_label(ln);
+        f.set_label_size(14);
+        f.set_label_color(Color::from_rgb(0x44, 0x47, 0x42));
+        f.set_align(Align::Left | Align::Inside); // 垂直居中于该行
+        f.set_frame(FrameType::NoBox);
+        info_frames.push(f);
+    }
     let mut sep = Frame::new(x, sep_y, bw, 1, None);
     sep.set_frame(FrameType::FlatBox);
     sep.set_color(Color::from_rgb(0xd6, 0xd3, 0xce));
@@ -265,40 +268,33 @@ fn more_panel(
         b
     };
 
-    // —— 一次性动作:执行后关窗 ——
+    // —— 一次性动作:执行后【不】关窗(关闭只通过底部 Close / Esc),否则 Close 没意义 ——
     let mut b_refresh = mk(0, "Refresh now");
     {
         let r = refresh.clone();
-        let mut wc = win.clone();
-        b_refresh.set_callback(move |_| { r.notify_one(); wc.hide(); });
+        b_refresh.set_callback(move |_| r.notify_one());
     }
 
     if let Some(ver) = update.clone() {
         let mut b_upd = mk(0, &format!("⬆ Update now → v{ver}"));
         b_upd.set_color(Color::from_rgb(0x2e, 0x7d, 0x32)); // 醒目绿
         b_upd.set_label_color(Color::White);
-        let mut wc = win.clone();
-        b_upd.set_callback(move |_| { crate::selfupdate::spawn_detached(); wc.hide(); });
+        b_upd.set_callback(move |_| crate::selfupdate::spawn_detached());
     }
 
     let mut b_check = mk(0, "Check for updates");
     {
         let c = check_update.clone();
-        let mut wc = win.clone();
-        b_check.set_callback(move |_| { c.notify_one(); wc.hide(); });
+        b_check.set_callback(move |_| c.notify_one());
     }
 
     let mut b_open = mk(0, "Open Claude Usage page");
-    {
-        let mut wc = win.clone();
-        b_open.set_callback(move |_| { open(USAGE_PAGE_URL); wc.hide(); });
-    }
+    b_open.set_callback(move |_| open(USAGE_PAGE_URL));
 
     let mut b_fb = mk(0, "Send feedback / report issue");
     {
         let url = feedback_url.clone();
-        let mut wc = win.clone();
-        b_fb.set_callback(move |_| { open(&url); wc.hide(); });
+        b_fb.set_callback(move |_| open(&url));
     }
 
     // —— 设置类:语言就地切换(只换取值,前缀不变)、用量提醒开设置窗 ——
@@ -317,16 +313,14 @@ fn more_panel(
     let mut b_alert = mk(0, "Usage alert…");
     {
         let t = tx.clone();
-        let mut wc = win.clone();
-        b_alert.set_callback(move |_| { let _ = t.send(UiCmd::AlertSettings); wc.hide(); });
+        b_alert.set_callback(move |_| {
+            let _ = t.send(UiCmd::AlertSettings); // 开设置窗,More 保持打开
+        });
     }
 
     // —— 关于 / 退出 / 关闭 ——
     let mut b_about = mk(grp, &format!("About (GitHub)  v{VERSION}{BUILD_TAG}"));
-    {
-        let mut wc = win.clone();
-        b_about.set_callback(move |_| { open(REPO_URL); wc.hide(); });
-    }
+    b_about.set_callback(move |_| open(REPO_URL));
 
     #[cfg(not(feature = "dev"))]
     {
@@ -359,7 +353,7 @@ fn more_panel(
 
     // 用量行随托盘一起动:窗开着时每秒从共享态刷新(倒计时走字、新一轮轮询的数值)。行数变了才跳过(留待重开)。
     {
-        let mut info_t = info.clone();
+        let mut frames = info_frames.clone();
         let ls = lines_shared.clone();
         let win_t = win.clone();
         fltk::app::add_timeout3(1.0, move |handle| {
@@ -367,9 +361,11 @@ fn more_panel(
                 return; // 窗关了就停,不再 re-arm
             }
             if let Ok(g) = ls.lock() {
-                if g.len() == n_info && !g.is_empty() {
-                    info_t.set_label(&g.join("\n"));
-                    info_t.redraw();
+                if g.len() == frames.len() {
+                    for (f, ln) in frames.iter_mut().zip(g.iter()) {
+                        f.set_label(ln);
+                        f.redraw();
+                    }
                 }
             }
             fltk::app::repeat_timeout3(1.0, handle);
