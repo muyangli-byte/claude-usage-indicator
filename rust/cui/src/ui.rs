@@ -47,6 +47,9 @@ pub fn spawn(
             fltk::app::background2(0xff, 0xff, 0xff);
             fltk::app::foreground(0x2e, 0x34, 0x36);
             fltk::app::set_visible_focus(false);
+            // 默认字体改成 Noto Sans CJK SC:中英文同一字体 → 语言切换基线一致(不再上下跳);
+            // 非等宽且含方块字符 → 进度条渲染贴近托盘菜单(桌面 sans),不再是等宽 Courier 那种突兀样式。
+            Font::set_font(Font::Helvetica, "Noto Sans CJK SC");
 
             let mut alert: Option<Window> = None;
             let mut settings: Option<Window> = None;
@@ -233,11 +236,11 @@ fn more_panel(
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
     win.set_label("Claude usage");
 
-    // 顶部用量进度条:与托盘菜单同样的文本(bar()+pct()),等宽字体让方块条对齐,灰色仿菜单 disabled 行
+    // 顶部用量进度条:与托盘菜单同样的文本(bar()+pct()),用默认 sans(=Noto Sans CJK SC)渲染,贴近托盘菜单;
+    // 灰色仿菜单 disabled 行。方块字符在该字体里等宽连续,条形整齐。
     let mut info = Frame::new(x, 10, bw, info_h, None);
     info.set_label(&lines.join("\n"));
-    info.set_label_font(Font::Courier);
-    info.set_label_size(13);
+    info.set_label_size(14);
     info.set_label_color(Color::from_rgb(0x44, 0x47, 0x42));
     info.set_align(Align::Left | Align::Top | Align::Inside);
     info.set_frame(FrameType::NoBox);
