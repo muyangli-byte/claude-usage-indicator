@@ -9,7 +9,8 @@ use std::sync::mpsc::{self, Sender};
 pub enum NotifyCmd {
     Status { status: String, error: String, lang: String },
     Update { ver: String, lang: String },
-    Updated { ver: String, lang: String }, // 自更新完成后开机首弹
+    Updated { ver: String, lang: String },  // 自更新完成后开机首弹
+    UpToDate { ver: String, lang: String },  // 用户主动「检查更新」且已是最新 → 瞬时提示(对齐 Python)
     Close(&'static str),
 }
 
@@ -94,6 +95,15 @@ pub fn spawn() -> Sender<NotifyCmd> {
                     };
                     // 复用 update channel → 顶掉「发现新版本」横幅（同进程内），瞬时展示
                     show(&mut handles, "update", "emblem-default", &title, &body, Urgency::Normal, Timeout::Milliseconds(8000), &[]);
+                }
+                NotifyCmd::UpToDate { ver, lang } => {
+                    let (title, body) = if lang == "zh" {
+                        ("已是最新".to_string(), format!("当前 v{ver}"))
+                    } else {
+                        ("Already up to date".to_string(), format!("You're on v{ver}"))
+                    };
+                    // 复用 update channel,瞬时展示(对齐 Python on_check_update 的 transient 提示)
+                    show(&mut handles, "update", "emblem-default", &title, &body, Urgency::Normal, Timeout::Milliseconds(6000), &[]);
                 }
                 NotifyCmd::Close(ch) => {
                     if let Some(h) = handles.remove(ch) {

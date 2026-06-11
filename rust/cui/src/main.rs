@@ -31,7 +31,13 @@ async fn main() -> anyhow::Result<()> {
             "--doctor" => cmd = "doctor",
             "--self-update" | "--update" => cmd = "selfupdate", // Rust 客户端的"更新"=自更新二进制
             "--uninstall" => cmd = "uninstall",
-            "--test-alert" => cmd = "testalert", // 调试:弹一个用量提醒看效果
+            // 调试子命令仅 dev 构建可用:prod 里 More 面板含真实「卸载」按钮,不能被调试旗触达
+            #[cfg(feature = "dev")]
+            "--test-alert" => cmd = "testalert", // 弹用量提醒闪窗 + 设置窗
+            #[cfg(feature = "dev")]
+            "--test-settings" => cmd = "testsettings", // 只弹设置窗
+            #[cfg(feature = "dev")]
+            "--test-more" => cmd = "testmore", // 弹 More 动作面板
             "--version" | "-V" => cmd = "version",
             "--help" | "-h" => cmd = "help",
             "--lang" => {
@@ -53,10 +59,28 @@ async fn main() -> anyhow::Result<()> {
             uninstall::spawn_detached_uninstall();
             println!("uninstall started in a detached unit");
         }
+        #[cfg(feature = "dev")]
         "testalert" => {
-            let tx = ui::spawn();
-            let _ = tx.send(ui::UiCmd::UsageAlert { pct: 80, lang: lang.clone() });
+            let tx = test_ui(&lang, true, 80);
+            // 演示两个窗口:用量提醒闪窗 + 设置窗(开关 + 阈值)
+            let _ = tx.send(ui::UiCmd::UsageAlert { pct: 80 });
+            let _ = tx.send(ui::UiCmd::AlertSettings);
             std::thread::sleep(Duration::from_secs(130)); // 保持进程存活让窗口显示
+        }
+        #[cfg(feature = "dev")]
+        "testsettings" => {
+            let tx = test_ui(&lang, false, 80);
+            let _ = tx.send(ui::UiCmd::AlertSettings);
+            std::thread::sleep(Duration::from_secs(130));
+        }
+        #[cfg(feature = "dev")]
+        "testmore" => {
+            let tx = test_ui(&lang, false, 80);
+            let _ = tx.send(ui::UiCmd::MorePanel {
+                update: Some("9.9.9".into()), // 演示「更新到 vX」按钮
+                feedback_url: format!("{}/issues/new", config::REPO_URL),
+            });
+            std::thread::sleep(Duration::from_secs(130));
         }
         "version" => println!("claude-usage-indicator {}{}", config::VERSION, config::BUILD_TAG),
         "help" => println!(
@@ -71,6 +95,18 @@ async fn main() -> anyhow::Result<()> {
         _ => run_gui(lang).await?,
     }
     Ok(())
+}
+
+/// 调试:起一个 ui 线程并带上哑 refresh/check_update 句柄,供 --test-* 子命令独立弹窗(仅 dev)。
+#[cfg(feature = "dev")]
+fn test_ui(lang: &str, alert_en: bool, alert_thr: u8) -> std::sync::mpsc::Sender<ui::UiCmd> {
+    ui::spawn(
+        Arc::new(AtomicBool::new(alert_en)),
+        Arc::new(AtomicU8::new(alert_thr)),
+        Arc::new(AtomicBool::new(lang == "zh")),
+        Arc::new(Notify::new()),
+        Arc::new(Notify::new()),
+    )
 }
 
 async fn run_gui(lang: String) -> anyhow::Result<()> {
@@ -90,11 +126,19 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
     let check_update = Arc::new(Notify::new());
     let notify_tx = notifier::spawn();
 
-    // 用量阈值提醒：从 config 载入开关/阈值,共享原子供 poller 读、菜单回调写;ui 线程跑 fltk 弹窗
+    // 用量阈值提醒：从 config 载入开关/阈值,共享原子供 poller 读、设置窗写;通知语言也用共享原子
+    // (弹窗里切换即时生效、连 poller 的通知语言一起变)。ui 线程跑 fltk,捕获这些句柄+Notify 供窗里按钮跨线程触发。
     let (alert_en0, alert_thr0) = creds::read_alert_cfg();
     let alert_enabled = Arc::new(AtomicBool::new(alert_en0));
     let alert_threshold = Arc::new(AtomicU8::new(alert_thr0));
-    let ui_tx = ui::spawn();
+    let lang_zh = Arc::new(AtomicBool::new(lang == "zh"));
+    let ui_tx = ui::spawn(
+        alert_enabled.clone(),
+        alert_threshold.clone(),
+        lang_zh.clone(),
+        refresh.clone(),
+        check_update.clone(),
+    );
 
     // 刚自更新过 → 开机弹一次「已更新到 vX」
     if let Some(ver) = selfupdate::consume_breadcrumb() {
@@ -103,14 +147,8 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
 
     let tray = tray::CuiTray {
         status: "init".into(),
-        lang: lang.clone(),
-        refresh: Some(refresh.clone()),
         show_error: Some(show_error.clone()),
-        check_update: Some(check_update.clone()),
-        alert_enabled: alert_en0,
-        alert_threshold: alert_thr0,
-        alert_en_shared: Some(alert_enabled.clone()),
-        alert_thr_shared: Some(alert_threshold.clone()),
+        ui_tx: Some(ui_tx.clone()),
         ..Default::default()
     };
     let handle = tray.spawn().await?;
@@ -133,6 +171,6 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
     }
 
     poller::run(handle, client, refresh, show_error, check_update, notify_tx,
-                alert_enabled, alert_threshold, ui_tx, lang, sk, org).await;
+                alert_enabled, alert_threshold, ui_tx, lang_zh, sk, org).await;
     Ok(())
 }

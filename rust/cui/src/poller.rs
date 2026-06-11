@@ -66,13 +66,17 @@ async fn do_version_check(
     handle: &Handle<CuiTray>,
     notified_update: &mut Option<String>,
     last_ver_check: &mut Option<Instant>,
+    user_initiated: bool, // 用户主动点「检查更新」→ 无论结果都给反馈(已是最新/有更新);定期兜底则只在有新版时弹
 ) {
     *last_ver_check = Some(Instant::now());
     if let Some(remote) = api::fetch_remote_version(client).await {
         let newer = remote_is_newer(&remote, VERSION);
-        if newer && notified_update.as_deref() != Some(remote.as_str()) {
+        if newer && (user_initiated || notified_update.as_deref() != Some(remote.as_str())) {
             let _ = notify_tx.send(NotifyCmd::Update { ver: remote.clone(), lang: lang.to_string() });
             *notified_update = Some(remote.clone());
+        } else if !newer && user_initiated {
+            // 已是最新且用户主动查 → 瞬时确认(对齐 Python),否则点完没任何反馈
+            let _ = notify_tx.send(NotifyCmd::UpToDate { ver: VERSION.to_string(), lang: lang.to_string() });
         }
         let upd = if newer { Some(remote) } else { None };
         handle.update(move |t: &mut CuiTray| t.update_available = upd).await;
@@ -90,7 +94,7 @@ pub async fn run(
     alert_en: Arc<AtomicBool>,
     alert_thr: Arc<AtomicU8>,
     ui_tx: Sender<crate::ui::UiCmd>,
-    lang: String,
+    lang_zh: Arc<AtomicBool>, // 通知语言(共享):菜单里切换即时生效,无需重启
     mut sk: String,
     mut org: String,
 ) {
@@ -107,6 +111,7 @@ pub async fn run(
 
     loop {
         touch_heartbeat();
+        let lang = if lang_zh.load(Ordering::Relaxed) { "zh" } else { "en" }; // 每轮取最新(语言可被菜单切换)
         if force_creds {
             if let Ok((s, o)) = creds::load_credentials().await {
                 sk = s;
@@ -156,10 +161,7 @@ pub async fn run(
                 if alert_en.load(Ordering::Relaxed) && u >= thr && !alerted {
                     alerted = true;
                     println!("[alert] current session {}% >= {}% → popup", u.round() as i64, thr as u8);
-                    let _ = ui_tx.send(crate::ui::UiCmd::UsageAlert {
-                        pct: u.round().clamp(0.0, 100.0) as u8,
-                        lang: lang.clone(),
-                    });
+                    let _ = ui_tx.send(crate::ui::UiCmd::UsageAlert { pct: u.round().clamp(0.0, 100.0) as u8 });
                 } else if u < thr {
                     alerted = false;
                 }
@@ -178,7 +180,7 @@ pub async fn run(
                 let _ = notify_tx.send(NotifyCmd::Status {
                     status: status.clone(),
                     error: error.clone(),
-                    lang: lang.clone(),
+                    lang: lang.to_string(),
                 });
                 last_notify = Some(Instant::now());
                 notified_status = status.clone();
@@ -187,7 +189,7 @@ pub async fn run(
 
         // 版本检查（首次 + 每 UPDATE_CHECK_S 兜底）
         if last_ver_check.map_or(true, |t| t.elapsed() >= Duration::from_secs(UPDATE_CHECK_S)) {
-            do_version_check(&client, &notify_tx, &lang, &handle, &mut notified_update, &mut last_ver_check).await;
+            do_version_check(&client, &notify_tx, lang, &handle, &mut notified_update, &mut last_ver_check, false).await;
         }
 
         let interval = next_interval(&status, changed, &mut stable);
@@ -203,12 +205,15 @@ pub async fn run(
             _ = show_error.notified() => { fire_error = true; }
             _ = check_update.notified() => { do_check = true; } // "Check for updates" / ntfy 推送
         }
+        // 等待期间用户可能在弹窗里切了语言 → 交互式即时通知(Show error / Check updates)取最新值
+        let lang = if lang_zh.load(Ordering::Relaxed) { "zh" } else { "en" };
         if fire_error && bad {
             // Show error details：立即弹当前故障（绕过连续≥2 的门槛），对齐 Python on_show_error
-            let _ = notify_tx.send(NotifyCmd::Status { status: status.clone(), error: error.clone(), lang: lang.clone() });
+            let _ = notify_tx.send(NotifyCmd::Status { status: status.clone(), error: error.clone(), lang: lang.to_string() });
         }
         if do_check {
-            do_version_check(&client, &notify_tx, &lang, &handle, &mut notified_update, &mut last_ver_check).await;
+            // do_check 来自「检查更新」按钮或 ntfy 推送,均按用户主动处理 → 已是最新也给提示
+            do_version_check(&client, &notify_tx, lang, &handle, &mut notified_update, &mut last_ver_check, true).await;
         }
     }
 }

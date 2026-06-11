@@ -120,6 +120,20 @@ pub fn write_alert_cfg(enabled: bool, threshold: u8) {
     let _ = std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default());
 }
 
+/// 把通知语言写回 config.json（读+合并+写，保留其它键如 alert_*/session_key）。
+pub fn write_lang(zh: bool) {
+    let path = home().join(".config/claude-usage-indicator/config.json");
+    let mut v = read_config();
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    v["lang"] = serde_json::Value::String(if zh { "zh" } else { "en" }.into());
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default());
+}
+
 /// 读持久化的通知语言（config.json 的 lang），默认 en。对齐 Python load_lang 的配置部分。
 pub fn load_lang() -> String {
     read_config()

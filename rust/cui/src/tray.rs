@@ -1,19 +1,14 @@
-//! ksni 托盘（纯 SNI/D-Bus，无 GTK）。完整菜单对齐 Python cui/tray.py：
-//! 每档两行（名称|reset + 进度条+%）、Sonnet/Opus 用过才显示、Status 行、More 子菜单全部动作。
+//! ksni 托盘（纯 SNI/D-Bus，无 GTK）。每档两行（名称|reset + 进度条+%）、Sonnet/Opus 用过才显示、
+//! Status 行、Show error details（出故障时）、More…（点开 fltk 动作面板）。
 //! 顶栏内联文字走 XAyatanaLabel（patched ksni）。
-use crate::config::{APP_ID, BUILD_TAG, ID_SUFFIX, LABEL_PREFIX, REPO_URL, USAGE_PAGE_URL, VERSION};
+use crate::config::{APP_ID, ID_SUFFIX, LABEL_PREFIX, REPO_URL, VERSION};
 use cui_core::{bar, fmt_countdown, fmt_countdown_long, fmt_resetday, fmt_resetday_long, pct, Raw};
-use ksni::menu::{CheckmarkItem, RadioGroup, RadioItem, StandardItem, SubMenu};
+use ksni::menu::StandardItem;
 use ksni::{MenuItem, ToolTip, Tray};
-use std::process::Command;
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Notify;
-
-fn open(url: &str) {
-    let _ = Command::new("xdg-open").arg(url).spawn();
-}
 
 fn urlencode(s: &str) -> String {
     s.bytes()
@@ -29,18 +24,11 @@ pub struct CuiTray {
     pub raw: Option<Raw>,
     pub status: String, // ""/init/ok/auth/cloudflare/schema/http/network/cookie
     pub error: String,
-    pub update_available: Option<String>,
-    pub lang: String, // "en"/"zh"（为后续通知用）
+    pub update_available: Option<String>, // 有新版本时随 MorePanel 传给弹窗显示「更新到 vX」
     pub received_at: Option<Instant>,
-    pub refresh: Option<Arc<Notify>>, // "Refresh now" → 唤醒轮询（并强制重读 cookie）
     pub show_error: Option<Arc<Notify>>, // "Show error details" → 让 poller 弹当前故障通知
-    pub check_update: Option<Arc<Notify>>, // "Check for updates" → 立即查 GitHub 版本
-    pub consecutive: u32,                 // 连续失败次数（Status 行 >1 时显示 (xN)，对齐 Python）
-    // 用量阈值提醒：菜单渲染用 alert_enabled/alert_threshold；shared 原子推给 poller 读
-    pub alert_enabled: bool,
-    pub alert_threshold: u8,
-    pub alert_en_shared: Option<Arc<AtomicBool>>,
-    pub alert_thr_shared: Option<Arc<AtomicU8>>,
+    pub consecutive: u32,                // 连续失败次数（Status 行 >1 时显示 (xN)，对齐 Python）
+    pub ui_tx: Option<Sender<crate::ui::UiCmd>>, // 点「More…」→ 发 MorePanel 让 fltk 弹动作面板
 }
 
 impl CuiTray {
@@ -98,20 +86,6 @@ impl CuiTray {
             self.status, self.error
         );
         format!("{REPO_URL}/issues/new?title={}&body={}", urlencode("Feedback: "), urlencode(&body))
-    }
-    fn toggle_lang(&mut self) {
-        self.lang = if self.lang == "zh" { "en".into() } else { "zh".into() };
-        let path = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default())
-            .join(".config/claude-usage-indicator/config.json");
-        let mut cfg: serde_json::Value = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-            .unwrap_or_else(|| serde_json::json!({}));
-        cfg["lang"] = serde_json::Value::String(self.lang.clone());
-        if let Some(dir) = path.parent() {
-            let _ = std::fs::create_dir_all(dir);
-        }
-        let _ = std::fs::write(&path, serde_json::to_string_pretty(&cfg).unwrap_or_default());
     }
 }
 
@@ -184,102 +158,19 @@ impl Tray for CuiTray {
         }
         items.push(MenuItem::Separator);
 
-        // More ▸
-        let refresh = self.refresh.clone();
-        let chk = self.check_update.clone();
-        let mut sub: Vec<MenuItem<Self>> = vec![act(
-            "Refresh now".into(),
-            Box::new(move |_| {
-                if let Some(n) = &refresh {
-                    n.notify_one();
-                }
-            }),
-        )];
-        if let Some(v) = &self.update_available {
-            sub.push(act(format!("⬆ Update now → v{v}"), Box::new(|_| crate::selfupdate::spawn_detached())));
-        }
-        sub.push(act(
-            "Check for updates".into(),
-            Box::new(move |_| {
-                if let Some(n) = &chk {
-                    n.notify_one();
+        // More：整合成一个按钮 → 点开 fltk 弹窗，原 More 子菜单里的所有动作(刷新/检查更新/打开页面/
+        // 反馈/语言/用量提醒/About/卸载)都在窗里。update_available 与 feedback_url 取点击时的快照传过去。
+        items.push(act(
+            "More…".into(),
+            Box::new(|t: &mut CuiTray| {
+                if let Some(tx) = &t.ui_tx {
+                    let _ = tx.send(crate::ui::UiCmd::MorePanel {
+                        update: t.update_available.clone(),
+                        feedback_url: t.feedback_url(),
+                    });
                 }
             }),
         ));
-        sub.push(act("Open Claude Usage page".into(), Box::new(|_| open(USAGE_PAGE_URL))));
-        sub.push(act("Send feedback / report issue".into(), Box::new(|t| open(&t.feedback_url()))));
-        sub.push(act(
-            format!("Notification language: {}", if self.lang == "zh" { "中文" } else { "English" }),
-            Box::new(|t| t.toggle_lang()),
-        ));
-
-        // 用量阈值提醒：开关 + 阈值（current session 穿过阈值时 poller 触发醒目闪窗）
-        sub.push(MenuItem::Separator);
-        sub.push(
-            CheckmarkItem {
-                label: "Usage alert (current session)".into(),
-                checked: self.alert_enabled,
-                activate: Box::new(|t: &mut CuiTray| {
-                    t.alert_enabled = !t.alert_enabled;
-                    if let Some(a) = &t.alert_en_shared {
-                        a.store(t.alert_enabled, Ordering::Relaxed);
-                    }
-                    crate::creds::write_alert_cfg(t.alert_enabled, t.alert_threshold);
-                }),
-                ..Default::default()
-            }
-            .into(),
-        );
-        {
-            const THR: [u8; 5] = [60, 70, 80, 90, 95];
-            let selected = THR.iter().position(|&x| x == self.alert_threshold).unwrap_or(2);
-            sub.push(
-                SubMenu {
-                    label: "Alert threshold".into(),
-                    submenu: vec![RadioGroup {
-                        selected,
-                        select: Box::new(|t: &mut CuiTray, idx: usize| {
-                            const THR: [u8; 5] = [60, 70, 80, 90, 95];
-                            let v = THR.get(idx).copied().unwrap_or(80);
-                            t.alert_threshold = v;
-                            if let Some(a) = &t.alert_thr_shared {
-                                a.store(v, Ordering::Relaxed);
-                            }
-                            crate::creds::write_alert_cfg(t.alert_enabled, t.alert_threshold);
-                        }),
-                        options: THR
-                            .iter()
-                            .map(|p| RadioItem { label: format!("{p}%"), ..Default::default() })
-                            .collect(),
-                    }
-                    .into()],
-                    ..Default::default()
-                }
-                .into(),
-            );
-        }
-
-        sub.push(act(format!("About (GitHub)  v{VERSION}{BUILD_TAG}"), Box::new(|_| open(REPO_URL))));
-        // prod：与 Python 一致，最后是 "Uninstall…"（在分离单元里跑 uninstall.sh --purge 后退出）。
-        // dev：Python 无 Quit，但本机测试保留 Quit 更方便。
-        #[cfg(not(feature = "dev"))]
-        {
-            sub.push(MenuItem::Separator);
-            sub.push(act(
-                "Uninstall…".into(),
-                Box::new(|_| {
-                    crate::uninstall::spawn_detached_uninstall();
-                    std::process::exit(0);
-                }),
-            ));
-        }
-        #[cfg(feature = "dev")]
-        {
-            sub.push(MenuItem::Separator);
-            sub.push(act("Quit (rust-dev)".into(), Box::new(|_| std::process::exit(0))));
-        }
-
-        items.push(SubMenu { label: "More".into(), submenu: sub, ..Default::default() }.into());
         items
     }
 }
