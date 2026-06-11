@@ -6,7 +6,7 @@
 //! 按钮据此跨线程触发(notify_one / 写 config / 开子窗)。用 GTK scheme + Yaru 浅色让观感接近原生。
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::{self, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use crate::config::{BUILD_TAG, REPO_URL, USAGE_PAGE_URL, VERSION};
 use fltk::button::{Button, CheckButton};
@@ -34,6 +34,7 @@ pub fn spawn(
     lang_zh: Arc<AtomicBool>,
     refresh: Arc<Notify>,
     check_update: Arc<Notify>,
+    lines_shared: Arc<Mutex<Vec<String>>>, // 托盘每秒写入最新 usage_lines,弹窗据此实时刷新
 ) -> Sender<UiCmd> {
     let (tx, rx) = mpsc::channel::<UiCmd>();
     let tx_self = tx.clone(); // 给窗口里的按钮用(如「用量提醒…」回投 AlertSettings)
@@ -81,6 +82,7 @@ pub fn spawn(
                                 lang_zh.clone(),
                                 refresh.clone(),
                                 check_update.clone(),
+                                lines_shared.clone(),
                                 tx_self.clone(),
                             ));
                         }
@@ -220,8 +222,10 @@ fn more_panel(
     lang_zh: Arc<AtomicBool>,
     refresh: Arc<Notify>,
     check_update: Arc<Notify>,
+    lines_shared: Arc<Mutex<Vec<String>>>,
     tx: Sender<UiCmd>,
 ) -> Window {
+    let n_info = lines.len(); // 初始行数:定窗高/布局;实时刷新时只在行数一致时换文本,避免溢出错位
     // 动作按钮数(refresh,[update],check,open,feedback | lang,alert | about,quit/uninstall,close) + 顶部信息行
     let n: i32 = 4 + i32::from(update.is_some()) + 2 + 3;
     let (w, bh, gap, grp) = (380, 34, 8, 12);
@@ -351,5 +355,24 @@ fn more_panel(
         Event::KeyDown if fltk::app::event_key() == Key::Escape => { w.hide(); true }
         _ => false,
     });
+
+    // 用量行随托盘一起动:窗开着时每秒从共享态刷新(倒计时走字、新一轮轮询的数值)。行数变了才跳过(留待重开)。
+    {
+        let mut info_t = info.clone();
+        let ls = lines_shared.clone();
+        let win_t = win.clone();
+        fltk::app::add_timeout3(1.0, move |handle| {
+            if !win_t.shown() {
+                return; // 窗关了就停,不再 re-arm
+            }
+            if let Ok(g) = ls.lock() {
+                if g.len() == n_info && !g.is_empty() {
+                    info_t.set_label(&g.join("\n"));
+                    info_t.redraw();
+                }
+            }
+            fltk::app::repeat_timeout3(1.0, handle);
+        });
+    }
     win
 }

@@ -75,15 +75,37 @@ async fn main() -> anyhow::Result<()> {
         }
         #[cfg(feature = "dev")]
         "testmore" => {
-            let tx = test_ui(&lang, false, 80);
+            let lines_shared = Arc::new(std::sync::Mutex::new(vec![
+                "Current session | Resets in 4h 12m".into(),
+                format!("{}  {:>4}", cui_core::bar(Some(80.0), 24), cui_core::pct(Some(80.0))),
+                "All models | Resets Tue 14:00".into(),
+                format!("{}  {:>4}", cui_core::bar(Some(35.0), 24), cui_core::pct(Some(35.0))),
+                "Status: ok | Last updated: 0s ago".to_string(),
+            ]));
+            // 模拟托盘 1s 定时器:每秒更新「Last updated」秒数 → 验证弹窗实时刷新
+            {
+                let ls = lines_shared.clone();
+                std::thread::spawn(move || {
+                    for n in 1.. {
+                        std::thread::sleep(Duration::from_secs(1));
+                        if let Ok(mut g) = ls.lock() {
+                            if let Some(last) = g.last_mut() {
+                                *last = format!("Status: ok | Last updated: {n}s ago");
+                            }
+                        }
+                    }
+                });
+            }
+            let tx = ui::spawn(
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicU8::new(80)),
+                Arc::new(AtomicBool::new(lang == "zh")),
+                Arc::new(Notify::new()),
+                Arc::new(Notify::new()),
+                lines_shared.clone(),
+            );
             let _ = tx.send(ui::UiCmd::MorePanel {
-                lines: vec![
-                    "Current session | Resets in 4h 12m".into(),
-                    format!("{}  {:>4}", cui_core::bar(Some(80.0), 24), cui_core::pct(Some(80.0))),
-                    "All models | Resets Tue 14:00".into(),
-                    format!("{}  {:>4}", cui_core::bar(Some(35.0), 24), cui_core::pct(Some(35.0))),
-                    "Status: ok | Last updated: 2s ago".into(),
-                ],
+                lines: lines_shared.lock().unwrap().clone(),
                 update: Some("9.9.9".into()), // 演示「更新到 vX」按钮
                 feedback_url: format!("{}/issues/new", config::REPO_URL),
             });
@@ -113,6 +135,7 @@ fn test_ui(lang: &str, alert_en: bool, alert_thr: u8) -> std::sync::mpsc::Sender
         Arc::new(AtomicBool::new(lang == "zh")),
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
+        Arc::new(std::sync::Mutex::new(Vec::new())), // 调试无实时源,弹窗维持初始快照
     )
 }
 
@@ -139,12 +162,15 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
     let alert_enabled = Arc::new(AtomicBool::new(alert_en0));
     let alert_threshold = Arc::new(AtomicU8::new(alert_thr0));
     let lang_zh = Arc::new(AtomicBool::new(lang == "zh"));
+    // 弹窗顶部用量行的实时数据源:1s 定时器写入最新 usage_lines,More 弹窗每秒读它刷新(和托盘一起动)
+    let lines_shared = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let ui_tx = ui::spawn(
         alert_enabled.clone(),
         alert_threshold.clone(),
         lang_zh.clone(),
         refresh.clone(),
         check_update.clone(),
+        lines_shared.clone(),
     );
 
     // 刚自更新过 → 开机弹一次「已更新到 vX」
@@ -169,10 +195,17 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
     // 每秒重绘：倒计时 / “Ns ago” / 顶栏标签平滑走动（ksni 按哈希去重，未变不发 D-Bus）。
     {
         let h = handle.clone();
+        let ls = lines_shared.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(1)).await;
-                let _ = h.update(|_| {}).await;
+                let ls2 = ls.clone();
+                // 重绘托盘 + 把最新用量行写入共享态(倒计时每秒走字),供 More 弹窗实时刷新
+                let _ = h.update(move |t| {
+                    if let Ok(mut g) = ls2.lock() {
+                        *g = t.usage_lines();
+                    }
+                }).await;
             }
         });
     }

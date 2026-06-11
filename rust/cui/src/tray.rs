@@ -88,7 +88,8 @@ impl CuiTray {
         format!("{REPO_URL}/issues/new?title={}&body={}", urlencode("Feedback: "), urlencode(&body))
     }
     /// 用量进度条文本（托盘菜单与 More 弹窗同源,保证「完全一样」）：4 行基础 + Sonnet/Opus（用过才有）+ Status 行。
-    fn usage_lines(&self) -> Vec<String> {
+    /// main 的 1s 定时器也调它写入共享态,供弹窗实时刷新(倒计时走字)。
+    pub(crate) fn usage_lines(&self) -> Vec<String> {
         let r = self.raw.clone().unwrap_or_default();
         let used = |u: Option<f64>, has_reset: bool| has_reset || u.map_or(false, |v| v != 0.0);
         let mut v = vec![
