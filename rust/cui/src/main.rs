@@ -77,6 +77,13 @@ async fn main() -> anyhow::Result<()> {
         "testmore" => {
             let tx = test_ui(&lang, false, 80);
             let _ = tx.send(ui::UiCmd::MorePanel {
+                lines: vec![
+                    "Current session | Resets in 4h 12m".into(),
+                    format!("{}  {:>4}", cui_core::bar(Some(80.0), 24), cui_core::pct(Some(80.0))),
+                    "All models | Resets Tue 14:00".into(),
+                    format!("{}  {:>4}", cui_core::bar(Some(35.0), 24), cui_core::pct(Some(35.0))),
+                    "Status: ok | Last updated: 2s ago".into(),
+                ],
                 update: Some("9.9.9".into()), // 演示「更新到 vX」按钮
                 feedback_url: format!("{}/issues/new", config::REPO_URL),
             });

@@ -87,6 +87,33 @@ impl CuiTray {
         );
         format!("{REPO_URL}/issues/new?title={}&body={}", urlencode("Feedback: "), urlencode(&body))
     }
+    /// 用量进度条文本（托盘菜单与 More 弹窗同源,保证「完全一样」）：4 行基础 + Sonnet/Opus（用过才有）+ Status 行。
+    fn usage_lines(&self) -> Vec<String> {
+        let r = self.raw.clone().unwrap_or_default();
+        let used = |u: Option<f64>, has_reset: bool| has_reset || u.map_or(false, |v| v != 0.0);
+        let mut v = vec![
+            format!("Current session | Resets in {}", fmt_countdown_long(r.five_hour_reset)),
+            format!("{}  {:>4}", bar(r.five_hour_util, 24), pct(r.five_hour_util)),
+            format!("All models | Resets {}", fmt_resetday_long(r.seven_day_reset)),
+            format!("{}  {:>4}", bar(r.seven_day_util, 24), pct(r.seven_day_util)),
+        ];
+        if used(r.sonnet_util, r.sonnet_reset.is_some()) {
+            v.push("Sonnet only".into());
+            v.push(format!("{}  {:>4}", bar(r.sonnet_util, 24), pct(r.sonnet_util)));
+        }
+        if used(r.opus_util, r.opus_reset.is_some()) {
+            v.push("Opus only".into());
+            v.push(format!("{}  {:>4}", bar(r.opus_util, 24), pct(r.opus_util)));
+        }
+        v.push(format!(
+            "Status: {}{}{} | Last updated: {}",
+            if self.healthy() { "" } else { "⚠️ " },
+            self.status_label(),
+            if !self.healthy() && self.consecutive > 1 { format!(" (x{})", self.consecutive) } else { String::new() },
+            self.ago()
+        ));
+        v
+    }
 }
 
 impl Tray for CuiTray {
@@ -120,30 +147,7 @@ impl Tray for CuiTray {
         let act = |label: String, f: Box<dyn Fn(&mut Self) + Send>| -> MenuItem<Self> {
             StandardItem { label, activate: f, ..Default::default() }.into()
         };
-        let r = self.raw.clone().unwrap_or_default();
-        let used = |u: Option<f64>, has_reset: bool| has_reset || u.map_or(false, |v| v != 0.0);
-
-        let mut items: Vec<MenuItem<Self>> = vec![
-            dim(format!("Current session | Resets in {}", fmt_countdown_long(r.five_hour_reset))),
-            dim(format!("{}  {:>4}", bar(r.five_hour_util, 24), pct(r.five_hour_util))),
-            dim(format!("All models | Resets {}", fmt_resetday_long(r.seven_day_reset))),
-            dim(format!("{}  {:>4}", bar(r.seven_day_util, 24), pct(r.seven_day_util))),
-        ];
-        if used(r.sonnet_util, r.sonnet_reset.is_some()) {
-            items.push(dim("Sonnet only".into()));
-            items.push(dim(format!("{}  {:>4}", bar(r.sonnet_util, 24), pct(r.sonnet_util))));
-        }
-        if used(r.opus_util, r.opus_reset.is_some()) {
-            items.push(dim("Opus only".into()));
-            items.push(dim(format!("{}  {:>4}", bar(r.opus_util, 24), pct(r.opus_util))));
-        }
-        items.push(dim(format!(
-            "Status: {}{}{} | Last updated: {}",
-            if self.healthy() { "" } else { "⚠️ " },
-            self.status_label(),
-            if !self.healthy() && self.consecutive > 1 { format!(" (x{})", self.consecutive) } else { String::new() },
-            self.ago()
-        )));
+        let mut items: Vec<MenuItem<Self>> = self.usage_lines().into_iter().map(dim).collect();
         if !self.healthy() {
             // 出故障：点开把具体故障以通知弹出（对齐 Python "Show error details"）
             let se = self.show_error.clone();
@@ -165,6 +169,7 @@ impl Tray for CuiTray {
             Box::new(|t: &mut CuiTray| {
                 if let Some(tx) = &t.ui_tx {
                     let _ = tx.send(crate::ui::UiCmd::MorePanel {
+                        lines: t.usage_lines(),
                         update: t.update_available.clone(),
                         feedback_url: t.feedback_url(),
                     });

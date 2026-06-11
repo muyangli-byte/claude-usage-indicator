@@ -20,7 +20,7 @@ use tokio::sync::Notify;
 pub enum UiCmd {
     UsageAlert { pct: u8 },
     AlertSettings,
-    MorePanel { update: Option<String>, feedback_url: String },
+    MorePanel { lines: Vec<String>, update: Option<String>, feedback_url: String },
 }
 
 fn open(url: &str) {
@@ -54,11 +54,10 @@ pub fn spawn(
             loop {
                 let _ = fltk::app::wait_for(0.1);
                 while let Ok(cmd) = rx.try_recv() {
-                    let zh = lang_zh.load(Ordering::Relaxed);
                     match cmd {
                         UiCmd::UsageAlert { pct } => {
                             if alert.as_ref().map_or(true, |w| !w.shown()) {
-                                alert = Some(usage_alert(pct, zh));
+                                alert = Some(usage_alert(pct));
                             }
                         }
                         UiCmd::AlertSettings => {
@@ -66,13 +65,14 @@ pub fn spawn(
                                 continue;
                             }
                             let (en, thr) = (alert_en.load(Ordering::Relaxed), alert_thr.load(Ordering::Relaxed));
-                            settings = Some(alert_settings(en, thr, zh, alert_en.clone(), alert_thr.clone()));
+                            settings = Some(alert_settings(en, thr, alert_en.clone(), alert_thr.clone()));
                         }
-                        UiCmd::MorePanel { update, feedback_url } => {
+                        UiCmd::MorePanel { lines, update, feedback_url } => {
                             if more.as_ref().map_or(false, |w| w.shown()) {
                                 continue;
                             }
                             more = Some(more_panel(
+                                lines,
                                 update,
                                 feedback_url,
                                 lang_zh.clone(),
@@ -90,23 +90,22 @@ pub fn spawn(
 }
 
 /// 用量提醒:居中无边框小窗,红黑闪烁,大白字。点任意处 / Esc / 120s 关。(故意自定义配色,醒目)
-fn usage_alert(pct: u8, zh: bool) -> Window {
+fn usage_alert(pct: u8) -> Window {
     let (sw, sh) = fltk::app::screen_size();
     let (w, h) = (560, 240);
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
     win.set_border(false);
     win.set_color(Color::from_rgb(0xe0, 0x31, 0x31));
 
-    let big = if zh { format!("Current session 已使用 {pct}%") } else { format!("Current session at {pct}%") };
     let mut title = Frame::new(0, 70, w, 70, None);
-    title.set_label(&big);
+    title.set_label(&format!("Current session at {pct}%"));
     title.set_label_size(34);
     title.set_label_font(Font::HelveticaBold);
     title.set_label_color(Color::White);
     title.set_frame(FrameType::NoBox);
 
     let mut hint = Frame::new(0, 152, w, 28, None);
-    hint.set_label(if zh { "点任意处 / 按 Esc 关闭" } else { "Click anywhere / Esc to dismiss" });
+    hint.set_label("Click anywhere / Esc to dismiss");
     hint.set_label_size(12);
     hint.set_label_color(Color::from_rgb(0xf0, 0xc8, 0xc8));
     hint.set_frame(FrameType::NoBox);
@@ -135,29 +134,29 @@ fn usage_alert(pct: u8, zh: bool) -> Window {
     win
 }
 
-/// 用量提醒设置窗:第一行开关(CheckButton)、第二行阈值数字(Spinner)、底部 取消/保存。
-/// 保存时写共享原子 + 持久化(菜单标签下轮渲染即反映)。GTK scheme 下观感接近原生。
-fn alert_settings(enabled: bool, threshold: u8, zh: bool, en: Arc<AtomicBool>, thr: Arc<AtomicU8>) -> Window {
+/// 用量提醒设置窗:第一行开关(CheckButton)、第二行阈值数字(Spinner)、底部 Cancel/Save。
+/// 保存时写共享原子 + 持久化。全英文(与托盘/菜单一致,只有通知是双语)。GTK scheme 下观感接近原生。
+fn alert_settings(enabled: bool, threshold: u8, en: Arc<AtomicBool>, thr: Arc<AtomicU8>) -> Window {
     let (sw, sh) = fltk::app::screen_size();
     let (w, h) = (440, 230);
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
-    win.set_label(if zh { "用量提醒" } else { "Usage alert" });
+    win.set_label("Usage alert");
 
     let mut head = Frame::new(22, 18, w - 44, 28, None);
-    head.set_label(if zh { "用量提醒" } else { "Usage alert" });
+    head.set_label("Usage alert");
     head.set_label_size(17);
     head.set_label_font(Font::HelveticaBold);
     head.set_align(Align::Left | Align::Inside);
     head.set_frame(FrameType::NoBox);
 
     // 第一行:开关
-    let mut chk = CheckButton::new(22, 60, w - 44, 30, if zh { " 开启当前会话用量提醒" } else { " Enable current-session usage alert" });
+    let mut chk = CheckButton::new(22, 60, w - 44, 30, " Enable current-session usage alert");
     chk.set_checked(enabled);
     chk.set_label_size(14);
 
     // 第二行:阈值数字
     let mut lbl = Frame::new(22, 108, 210, 32, None);
-    lbl.set_label(if zh { "当前会话用量达到：" } else { "Alert when usage reaches:" });
+    lbl.set_label("Alert when usage reaches:");
     lbl.set_label_size(14);
     lbl.set_align(Align::Left | Align::Inside);
     lbl.set_frame(FrameType::NoBox);
@@ -174,9 +173,9 @@ fn alert_settings(enabled: bool, threshold: u8, zh: bool, en: Arc<AtomicBool>, t
     pctf.set_frame(FrameType::NoBox);
 
     let mut cancel = Button::new(w - 210, 176, 92, 34, None);
-    cancel.set_label(if zh { "取消" } else { "Cancel" });
+    cancel.set_label("Cancel");
     let mut save = Button::new(w - 108, 176, 88, 34, None);
-    save.set_label(if zh { "保存" } else { "Save" });
+    save.set_label("Save");
 
     win.end();
     win.show();
@@ -203,13 +202,16 @@ fn alert_settings(enabled: bool, threshold: u8, zh: bool, en: Arc<AtomicBool>, t
 }
 
 fn lang_btn_label(zh: bool) -> String {
-    if zh { "通知语言：中文".into() } else { "Notification language: English".into() }
+    // 前缀恒为英文(与托盘/菜单一致),只切换取值:English ⇄ 中文
+    format!("Notification language: {}", if zh { "中文" } else { "English" })
 }
 
-/// More 弹窗:把原 More 子菜单的所有动作做成竖排按钮。一次性动作点完即关窗;语言就地切换并改标签;
-/// 「用量提醒…」回投 AlertSettings 由事件循环开设置窗。所有跨线程操作走捕获进来的共享句柄。
+/// More 弹窗:顶部是与托盘菜单一模一样的用量进度条(等宽渲染,只读快照),下面是原 More 子菜单的
+/// 所有动作按钮(全英文 chrome,与托盘一致)。一次性动作点完即关窗;语言就地切换并改标签;
+/// 「Usage alert…」回投 AlertSettings 由事件循环开设置窗。所有跨线程操作走捕获进来的共享句柄。
 #[allow(clippy::too_many_arguments)]
 fn more_panel(
+    lines: Vec<String>,
     update: Option<String>,
     feedback_url: String,
     lang_zh: Arc<AtomicBool>,
@@ -217,28 +219,34 @@ fn more_panel(
     check_update: Arc<Notify>,
     tx: Sender<UiCmd>,
 ) -> Window {
-    let zh = lang_zh.load(Ordering::Relaxed);
-    // 动作按钮数 → 算窗高(refresh,[update],check,open,feedback | lang,alert | about,quit/uninstall,close)
+    // 动作按钮数(refresh,[update],check,open,feedback | lang,alert | about,quit/uninstall,close) + 顶部信息行
     let n: i32 = 4 + i32::from(update.is_some()) + 2 + 3;
-    let (w, bh, gap, grp) = (320, 34, 8, 12);
+    let (w, bh, gap, grp) = (380, 34, 8, 12);
     let x = 16;
     let bw = w - 2 * x;
-    let head_h = 30;
-    let h = 14 + head_h + 6 + n * (bh + gap) + 2 * grp + 8;
+    let line_h = 19;
+    let info_h = lines.len() as i32 * line_h;
+    let top = 12 + info_h + 12; // 信息块 + 分隔线之后按钮起点
+    let h = top + n * (bh + gap) + 2 * grp + 8;
 
     let (sw, sh) = fltk::app::screen_size();
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
-    win.set_label(if zh { "Claude 用量" } else { "Claude usage" });
+    win.set_label("Claude usage");
 
-    let mut head = Frame::new(x, 12, bw, head_h, None);
-    head.set_label(if zh { "Claude 用量" } else { "Claude usage" });
-    head.set_label_size(16);
-    head.set_label_font(Font::HelveticaBold);
-    head.set_align(Align::Left | Align::Inside);
-    head.set_frame(FrameType::NoBox);
+    // 顶部用量进度条:与托盘菜单同样的文本(bar()+pct()),等宽字体让方块条对齐,灰色仿菜单 disabled 行
+    let mut info = Frame::new(x, 10, bw, info_h, None);
+    info.set_label(&lines.join("\n"));
+    info.set_label_font(Font::Courier);
+    info.set_label_size(13);
+    info.set_label_color(Color::from_rgb(0x44, 0x47, 0x42));
+    info.set_align(Align::Left | Align::Top | Align::Inside);
+    info.set_frame(FrameType::NoBox);
+    let mut sep = Frame::new(x, 10 + info_h + 4, bw, 1, None);
+    sep.set_frame(FrameType::FlatBox);
+    sep.set_color(Color::from_rgb(0xd6, 0xd3, 0xce));
 
     // 所有 y 推进都在闭包里完成(闭包按可变借用持有 y),分组间距通过 gap_before 传入,避免外部再动 y。
-    let mut y = 14 + head_h + 6;
+    let mut y = top;
     let mut mk = |gap_before: i32, label: &str| -> Button {
         y += gap_before;
         let mut b = Button::new(x, y, bw, bh, None);
@@ -248,7 +256,7 @@ fn more_panel(
     };
 
     // —— 一次性动作:执行后关窗 ——
-    let mut b_refresh = mk(0, if zh { "立即刷新" } else { "Refresh now" });
+    let mut b_refresh = mk(0, "Refresh now");
     {
         let r = refresh.clone();
         let mut wc = win.clone();
@@ -256,35 +264,35 @@ fn more_panel(
     }
 
     if let Some(ver) = update.clone() {
-        let mut b_upd = mk(0, &if zh { format!("⬆ 更新到 v{ver}") } else { format!("⬆ Update now → v{ver}") });
+        let mut b_upd = mk(0, &format!("⬆ Update now → v{ver}"));
         b_upd.set_color(Color::from_rgb(0x2e, 0x7d, 0x32)); // 醒目绿
         b_upd.set_label_color(Color::White);
         let mut wc = win.clone();
         b_upd.set_callback(move |_| { crate::selfupdate::spawn_detached(); wc.hide(); });
     }
 
-    let mut b_check = mk(0, if zh { "检查更新" } else { "Check for updates" });
+    let mut b_check = mk(0, "Check for updates");
     {
         let c = check_update.clone();
         let mut wc = win.clone();
         b_check.set_callback(move |_| { c.notify_one(); wc.hide(); });
     }
 
-    let mut b_open = mk(0, if zh { "打开 Claude 用量页面" } else { "Open Claude Usage page" });
+    let mut b_open = mk(0, "Open Claude Usage page");
     {
         let mut wc = win.clone();
         b_open.set_callback(move |_| { open(USAGE_PAGE_URL); wc.hide(); });
     }
 
-    let mut b_fb = mk(0, if zh { "反馈 / 报告问题" } else { "Send feedback / report issue" });
+    let mut b_fb = mk(0, "Send feedback / report issue");
     {
         let url = feedback_url.clone();
         let mut wc = win.clone();
         b_fb.set_callback(move |_| { open(&url); wc.hide(); });
     }
 
-    // —— 设置类:语言就地切换、用量提醒开设置窗 ——
-    let mut b_lang = mk(grp, &lang_btn_label(zh));
+    // —— 设置类:语言就地切换(只换取值,前缀不变)、用量提醒开设置窗 ——
+    let mut b_lang = mk(grp, &lang_btn_label(lang_zh.load(Ordering::Relaxed)));
     {
         let lz = lang_zh.clone();
         b_lang.set_callback(move |b| {
@@ -296,7 +304,7 @@ fn more_panel(
         });
     }
 
-    let mut b_alert = mk(0, if zh { "用量提醒…" } else { "Usage alert…" });
+    let mut b_alert = mk(0, "Usage alert…");
     {
         let t = tx.clone();
         let mut wc = win.clone();
@@ -312,7 +320,7 @@ fn more_panel(
 
     #[cfg(not(feature = "dev"))]
     {
-        let mut b_uninstall = mk(0, if zh { "卸载…" } else { "Uninstall…" });
+        let mut b_uninstall = mk(0, "Uninstall…");
         b_uninstall.set_color(Color::from_rgb(0xc0, 0x39, 0x2b)); // 危险红
         b_uninstall.set_label_color(Color::White);
         b_uninstall.set_callback(move |_| {
@@ -326,7 +334,7 @@ fn more_panel(
         b_quit.set_callback(move |_| std::process::exit(0));
     }
 
-    let mut b_close = mk(0, if zh { "关闭" } else { "Close" });
+    let mut b_close = mk(0, "Close");
     {
         let mut wc = win.clone();
         b_close.set_callback(move |_| wc.hide());
