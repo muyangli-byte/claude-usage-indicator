@@ -649,6 +649,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "cmk"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fd5de2a10e31b3ec3e8d75e7ccf8281ab3ee55de68f7ab6ffa9e21be8d82f22"
+
+[[package]]
 name = "cmov"
 version = "0.5.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -745,6 +751,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "crossbeam-channel"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "82b8f8f868b36967f9606790d1903570de9ceaf870a7bf9fbbd3016d636a2cb2"
+dependencies = [
+ "crossbeam-utils",
+]
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -811,6 +826,7 @@ dependencies = [
  "anyhow",
  "cbc 0.2.1",
  "cui-core",
+ "fltk",
  "futures-util",
  "glob",
  "hmac 0.13.0",
@@ -1051,6 +1067,30 @@ checksum = "843fba2746e448b37e26a819579957415c8cef339bf08564fe8b7ddbd959573c"
 dependencies = [
  "crc32fast",
  "miniz_oxide",
+]
+
+[[package]]
+name = "fltk"
+version = "1.5.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "78e4a0494d4c6c020514ae1d0b6cc44beddd5f37f0b81bc8e84334652ee15291"
+dependencies = [
+ "bitflags",
+ "crossbeam-channel",
+ "fltk-sys",
+ "minipaste",
+ "once_cell",
+ "ttf-parser",
+]
+
+[[package]]
+name = "fltk-sys"
+version = "1.5.23"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d9c99e29458923abe3f07b7f8a3bc5b5de3a2c04ad82273fd96402b3666ed06"
+dependencies = [
+ "cmake",
+ "cmk",
 ]
 
 [[package]]
@@ -1883,6 +1923,15 @@ name = "minimal-lexical"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "68354c5c6bd36d73ff3feceb05efa59b6acb7626617f4962be322a825e61f79a"
+
+[[package]]
+name = "minipaste"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bbcafc6544efab7decec8e8e63d6e7cbaac0a699a4adead308a80f9c302d6ae"
+dependencies = [
+ "proc-macro2",
+]
 
 [[package]]
 name = "miniz_oxide"
@@ -3065,6 +3114,12 @@ name = "try-lock"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e421abadd41a4225275504ea4d6566923418b7f05506fbc9c0fe86ba7396114b"
+
+[[package]]
+name = "ttf-parser"
+version = "0.25.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2df906b07856748fa3f6e0ad0cbaa047052d4a7dd609e231c4f72cee8c36f31"
 
 [[package]]
 name = "typed-builder"

@@ -3,9 +3,10 @@
 //! 顶栏内联文字走 XAyatanaLabel（patched ksni）。
 use crate::config::{APP_ID, BUILD_TAG, ID_SUFFIX, LABEL_PREFIX, REPO_URL, USAGE_PAGE_URL, VERSION};
 use cui_core::{bar, fmt_countdown, fmt_countdown_long, fmt_resetday, fmt_resetday_long, pct, Raw};
-use ksni::menu::{StandardItem, SubMenu};
+use ksni::menu::{CheckmarkItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use ksni::{MenuItem, ToolTip, Tray};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::Notify;
@@ -35,6 +36,11 @@ pub struct CuiTray {
     pub show_error: Option<Arc<Notify>>, // "Show error details" → 让 poller 弹当前故障通知
     pub check_update: Option<Arc<Notify>>, // "Check for updates" → 立即查 GitHub 版本
     pub consecutive: u32,                 // 连续失败次数（Status 行 >1 时显示 (xN)，对齐 Python）
+    // 用量阈值提醒：菜单渲染用 alert_enabled/alert_threshold；shared 原子推给 poller 读
+    pub alert_enabled: bool,
+    pub alert_threshold: u8,
+    pub alert_en_shared: Option<Arc<AtomicBool>>,
+    pub alert_thr_shared: Option<Arc<AtomicU8>>,
 }
 
 impl CuiTray {
@@ -206,6 +212,53 @@ impl Tray for CuiTray {
             format!("Notification language: {}", if self.lang == "zh" { "中文" } else { "English" }),
             Box::new(|t| t.toggle_lang()),
         ));
+
+        // 用量阈值提醒：开关 + 阈值（current session 穿过阈值时 poller 触发醒目闪窗）
+        sub.push(MenuItem::Separator);
+        sub.push(
+            CheckmarkItem {
+                label: "Usage alert (current session)".into(),
+                checked: self.alert_enabled,
+                activate: Box::new(|t: &mut CuiTray| {
+                    t.alert_enabled = !t.alert_enabled;
+                    if let Some(a) = &t.alert_en_shared {
+                        a.store(t.alert_enabled, Ordering::Relaxed);
+                    }
+                    crate::creds::write_alert_cfg(t.alert_enabled, t.alert_threshold);
+                }),
+                ..Default::default()
+            }
+            .into(),
+        );
+        {
+            const THR: [u8; 5] = [60, 70, 80, 90, 95];
+            let selected = THR.iter().position(|&x| x == self.alert_threshold).unwrap_or(2);
+            sub.push(
+                SubMenu {
+                    label: "Alert threshold".into(),
+                    submenu: vec![RadioGroup {
+                        selected,
+                        select: Box::new(|t: &mut CuiTray, idx: usize| {
+                            const THR: [u8; 5] = [60, 70, 80, 90, 95];
+                            let v = THR.get(idx).copied().unwrap_or(80);
+                            t.alert_threshold = v;
+                            if let Some(a) = &t.alert_thr_shared {
+                                a.store(v, Ordering::Relaxed);
+                            }
+                            crate::creds::write_alert_cfg(t.alert_enabled, t.alert_threshold);
+                        }),
+                        options: THR
+                            .iter()
+                            .map(|p| RadioItem { label: format!("{p}%"), ..Default::default() })
+                            .collect(),
+                    }
+                    .into()],
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+
         sub.push(act(format!("About (GitHub)  v{VERSION}{BUILD_TAG}"), Box::new(|_| open(REPO_URL))));
         // prod：与 Python 一致，最后是 "Uninstall…"（在分离单元里跑 uninstall.sh --purge 后退出）。
         // dev：Python 无 Quit，但本机测试保留 Quit 更方便。

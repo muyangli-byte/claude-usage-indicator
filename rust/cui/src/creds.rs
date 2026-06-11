@@ -97,6 +97,29 @@ fn read_config() -> serde_json::Value {
         .unwrap_or(serde_json::Value::Null)
 }
 
+/// 用量阈值提醒配置：alert_enabled（默认关）+ alert_threshold（默认 80，clamp 到 1..100）。
+pub fn read_alert_cfg() -> (bool, u8) {
+    let v = read_config();
+    let en = v.get("alert_enabled").and_then(|x| x.as_bool()).unwrap_or(false);
+    let thr = v.get("alert_threshold").and_then(|x| x.as_u64()).unwrap_or(80).clamp(1, 100) as u8;
+    (en, thr)
+}
+
+/// 把用量提醒配置写回 config.json（读+合并+写，保留其它键如 lang/session_key）。
+pub fn write_alert_cfg(enabled: bool, threshold: u8) {
+    let path = home().join(".config/claude-usage-indicator/config.json");
+    let mut v = read_config();
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    v["alert_enabled"] = serde_json::Value::Bool(enabled);
+    v["alert_threshold"] = serde_json::Value::from(threshold);
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default());
+}
+
 /// 读持久化的通知语言（config.json 的 lang），默认 en。对齐 Python load_lang 的配置部分。
 pub fn load_lang() -> String {
     read_config()

@@ -15,6 +15,7 @@ aes = "0.9.1"
 anyhow = "1.0.102"
 cbc = "0.2.1"
 cui-core = { path = "../core" }
+fltk = "1" # 轻量 GUI（静态链 FLTK），用于更新内容窗口 + 用量阈值提醒弹窗（无 GTK）
 futures-util = "0.3" # zbus 信号流 .next()（通知动作按钮监听）
 glob = "0.3.3"
 hmac = "0.13.0"

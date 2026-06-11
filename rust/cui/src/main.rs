@@ -10,9 +10,11 @@ mod ntfy;
 mod poller;
 mod selfupdate;
 mod tray;
+mod ui;
 mod uninstall;
 
 use ksni::TrayMethods;
+use std::sync::atomic::{AtomicBool, AtomicU8};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Notify;
@@ -29,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
             "--doctor" => cmd = "doctor",
             "--self-update" | "--update" => cmd = "selfupdate", // Rust 客户端的"更新"=自更新二进制
             "--uninstall" => cmd = "uninstall",
+            "--test-alert" => cmd = "testalert", // 调试:弹一个用量提醒看效果
             "--version" | "-V" => cmd = "version",
             "--help" | "-h" => cmd = "help",
             "--lang" => {
@@ -49,6 +52,11 @@ async fn main() -> anyhow::Result<()> {
         "uninstall" => {
             uninstall::spawn_detached_uninstall();
             println!("uninstall started in a detached unit");
+        }
+        "testalert" => {
+            let tx = ui::spawn();
+            let _ = tx.send(ui::UiCmd::UsageAlert { pct: 80, lang: lang.clone() });
+            std::thread::sleep(Duration::from_secs(130)); // 保持进程存活让窗口显示
         }
         "version" => println!("claude-usage-indicator {}{}", config::VERSION, config::BUILD_TAG),
         "help" => println!(
@@ -82,6 +90,12 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
     let check_update = Arc::new(Notify::new());
     let notify_tx = notifier::spawn();
 
+    // 用量阈值提醒：从 config 载入开关/阈值,共享原子供 poller 读、菜单回调写;ui 线程跑 fltk 弹窗
+    let (alert_en0, alert_thr0) = creds::read_alert_cfg();
+    let alert_enabled = Arc::new(AtomicBool::new(alert_en0));
+    let alert_threshold = Arc::new(AtomicU8::new(alert_thr0));
+    let ui_tx = ui::spawn();
+
     // 刚自更新过 → 开机弹一次「已更新到 vX」
     if let Some(ver) = selfupdate::consume_breadcrumb() {
         let _ = notify_tx.send(notifier::NotifyCmd::Updated { ver, lang: lang.clone() });
@@ -93,6 +107,10 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
         refresh: Some(refresh.clone()),
         show_error: Some(show_error.clone()),
         check_update: Some(check_update.clone()),
+        alert_enabled: alert_en0,
+        alert_threshold: alert_thr0,
+        alert_en_shared: Some(alert_enabled.clone()),
+        alert_thr_shared: Some(alert_threshold.clone()),
         ..Default::default()
     };
     let handle = tray.spawn().await?;
@@ -114,6 +132,7 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
         });
     }
 
-    poller::run(handle, client, refresh, show_error, check_update, notify_tx, lang, sk, org).await;
+    poller::run(handle, client, refresh, show_error, check_update, notify_tx,
+                alert_enabled, alert_threshold, ui_tx, lang, sk, org).await;
     Ok(())
 }

@@ -8,6 +8,7 @@ use crate::{api, creds};
 use cui_core::{remote_is_newer, should_notify_bad, Raw};
 use ksni::Handle;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -86,6 +87,9 @@ pub async fn run(
     show_error: Arc<Notify>,
     check_update: Arc<Notify>,
     notify_tx: Sender<NotifyCmd>,
+    alert_en: Arc<AtomicBool>,
+    alert_thr: Arc<AtomicU8>,
+    ui_tx: Sender<crate::ui::UiCmd>,
     lang: String,
     mut sk: String,
     mut org: String,
@@ -99,6 +103,7 @@ pub async fn run(
     let mut notified_status = String::new();
     let mut last_notify: Option<Instant> = None;
     let mut notified_update: Option<String> = None;
+    let mut alerted = false; // 用量提醒去重：穿过阈值置位，跌回阈值下清零
 
     loop {
         touch_heartbeat();
@@ -143,6 +148,23 @@ pub async fn run(
                 }
             })
             .await;
+
+        // 用量阈值提醒：current session 穿过阈值 → 发命令给 ui 线程弹醒目闪窗（一次；跌回/重置后才再触发）
+        if let Some(r) = &raw {
+            if let Some(u) = r.five_hour_util {
+                let thr = alert_thr.load(Ordering::Relaxed) as f64;
+                if alert_en.load(Ordering::Relaxed) && u >= thr && !alerted {
+                    alerted = true;
+                    println!("[alert] current session {}% >= {}% → popup", u.round() as i64, thr as u8);
+                    let _ = ui_tx.send(crate::ui::UiCmd::UsageAlert {
+                        pct: u.round().clamp(0.0, 100.0) as u8,
+                        lang: lang.clone(),
+                    });
+                } else if u < thr {
+                    alerted = false;
+                }
+            }
+        }
 
         // —— 通知策略 ——
         if !bad {
