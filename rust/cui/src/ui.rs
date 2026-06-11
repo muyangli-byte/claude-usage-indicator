@@ -228,7 +228,8 @@ fn more_panel(
     let n_info = lines.len(); // 初始行数:定窗高/布局;实时刷新时只在行数一致时换文本,避免溢出错位
     // 动作按钮数(refresh,[update],check,open,feedback | lang,alert | about,quit/uninstall,close) + 顶部信息行
     let n: i32 = 4 + i32::from(update.is_some()) + 2 + 3;
-    let (w, bh, gap, grp) = (380, 34, 8, 12);
+    // 窗宽要容下 24 格进度条 + 右侧百分比(否则百分比被截掉),与托盘菜单一致
+    let (w, bh, gap, grp) = (440, 34, 8, 12);
     let x = 16;
     let bw = w - 2 * x;
     let line_h = 20;
@@ -246,7 +247,7 @@ fn more_panel(
     // 灰色仿菜单 disabled 行。方块字符在该字体里等宽连续,条形整齐。
     let mut info = Frame::new(x, info_y, bw, info_h, None);
     info.set_label(&lines.join("\n"));
-    info.set_label_size(14);
+    info.set_label_size(13);
     info.set_label_color(Color::from_rgb(0x44, 0x47, 0x42));
     info.set_align(Align::Left | Align::Top | Align::Inside);
     info.set_frame(FrameType::NoBox);
