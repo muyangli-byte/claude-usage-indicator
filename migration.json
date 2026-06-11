@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "target": "2.12.0",
-  "percent": 0,
+  "percent": 100,
   "min_glibc": "2.28",
   "arch": ["x86_64"],
   "rollback_all": false,
