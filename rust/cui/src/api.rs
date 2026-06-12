@@ -6,8 +6,13 @@ use wreq::Client;
 use wreq_util::Emulation;
 
 /// 构建一个伪装 Chrome 的客户端（BoringSSL，过 Cloudflare）。
+/// 跟随重定向(默认不跟随):GitHub 的 releases/latest/download/ 会 302 跳到 CDN,
+/// 自更新下载二进制/校验和必须跟随,否则拿到 302 就当「无资产」放弃(更新点了没反应的根因)。
 pub fn client() -> Result<Client> {
-    Ok(Client::builder().emulation(Emulation::Chrome137).build()?)
+    Ok(Client::builder()
+        .emulation(Emulation::Chrome137)
+        .redirect(wreq::redirect::Policy::limited(10))
+        .build()?)
 }
 
 /// 查 GitHub 上的最新版本（contents API raw media type，~60s 缓存；失败回退 raw CDN）。对应 Python fetch_remote_version。
