@@ -195,6 +195,7 @@ fn alert_settings(
     let mut chk = CheckButton::new(22, 60, w - 44, 30, " Enable current-session usage alert");
     chk.set_checked(enabled);
     chk.set_label_size(14);
+    chk.clear_visible_focus(); // 不画虚线焦点框
 
     // 第二行:阈值。IntInput 直接打字即生效(value() 实时反映,不必回车);−/+ 按钮与键盘上下键各 ±1。
     let mut lbl = Frame::new(22, 108, 200, 32, None);
@@ -204,11 +205,13 @@ fn alert_settings(
     lbl.set_frame(FrameType::NoBox);
     let mut minus = Button::new(228, 108, 30, 32, None);
     minus.set_label("−");
+    minus.clear_visible_focus();
     let mut input = IntInput::new(260, 108, 56, 32, None);
     input.set_value(&threshold.to_string());
     input.set_text_size(15);
     let mut plus = Button::new(318, 108, 30, 32, None);
     plus.set_label("+");
+    plus.clear_visible_focus();
     let mut pctf = Frame::new(352, 108, 24, 32, None);
     pctf.set_label("%");
     pctf.set_label_size(15);
@@ -233,6 +236,7 @@ fn alert_settings(
 
     let mut cancel = Button::new(w - 210, 176, 92, 34, None);
     cancel.set_label("Cancel");
+    cancel.clear_visible_focus();
     let mut save = Button::new(w - 108, 176, 88, 34, None);
     save.set_label("Save");
 
@@ -243,7 +247,9 @@ fn alert_settings(
     {
         let mut save_f = save.clone();
         fltk::app::add_timeout3(0.05, move |_| {
-            let _ = save_f.take_focus();
+            let _ = save_f.take_focus(); // 全局开焦点 → 能拿到焦点
+            save_f.clear_visible_focus(); // 但清掉它的焦点框标志 → 不画虚线框
+            save_f.redraw();
         });
     }
 
@@ -334,6 +340,7 @@ fn more_panel(
         y += gap_before;
         let mut b = Button::new(x, y, bw, bh, None);
         b.set_label(label);
+        b.clear_visible_focus(); // 不画虚线焦点框(全局焦点仍开,take_focus 仍可用)
         y += bh + gap;
         b
     };
