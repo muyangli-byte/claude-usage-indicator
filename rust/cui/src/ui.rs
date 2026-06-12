@@ -27,9 +27,10 @@ fn bump(inp: &mut IntInput, delta: i64) {
 fn set_window_icon(win: &mut Window) {
     const SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
 <rect x="2" y="2" width="60" height="60" rx="14" fill="#d97757"/>
-<!-- 下半部:两条整宽横向白条 -->
-<rect x="9" y="36" width="46" height="9" rx="2.5" fill="#ffffff"/>
-<rect x="9" y="49" width="46" height="9" rx="2.5" fill="#ffffff"/>
+<!-- 右上角:一条短白条 -->
+<rect x="36" y="15" width="20" height="9" rx="2.5" fill="#ffffff"/>
+<!-- 下半部:一条长(整宽)白条 -->
+<rect x="9" y="44" width="46" height="9" rx="2.5" fill="#ffffff"/>
 <!-- 左上 1/4:Claude 放射状光芒(中心 17,17) -->
 <g stroke="#ffffff" stroke-width="2.4" stroke-linecap="round">
 <line x1="17" y1="17" x2="17" y2="5"/>
