@@ -64,7 +64,8 @@ pub fn spawn(
             fltk::app::background(0xf6, 0xf5, 0xf4);
             fltk::app::background2(0xff, 0xff, 0xff);
             fltk::app::foreground(0x2e, 0x34, 0x36);
-            fltk::app::set_visible_focus(false);
+            // 注意:不能关全局 visible_focus —— 关了之后只有文本输入框能拿焦点(它强制接受),
+            // 于是阈值框开窗即被聚焦、常驻光标且无法移走。保持开启,再用 take_focus 指定初始焦点。
             // 默认字体改成 Noto Sans CJK SC:中英文同一字体 → 语言切换基线一致(不再上下跳);
             // 非等宽且含方块字符 → 进度条渲染贴近托盘菜单(桌面 sans),不再是等宽 Courier 那种突兀样式。
             Font::set_font(Font::Helvetica, "Noto Sans CJK SC");
@@ -234,12 +235,17 @@ fn alert_settings(
     cancel.set_label("Cancel");
     let mut save = Button::new(w - 108, 176, 88, 34, None);
     save.set_label("Save");
-    save.set_visible_focus(); // 仅允许 Save 持有焦点(全局已关焦点框);其余控件不抢焦点
 
     win.end();
     win.show();
-    // 开窗即把键盘焦点放到 Save,而不是阈值输入框 → 输入框不再常驻光标(点它打字时才出现)
-    let _ = save.take_focus();
+    // 延后到映射之后再移焦(同步 take_focus 会被映射时的自动聚焦覆盖)→ 焦点落 Save(默认按钮),
+    // 阈值输入框不再常驻光标(点它打字时才获焦出现光标)。
+    {
+        let mut save_f = save.clone();
+        fltk::app::add_timeout3(0.05, move |_| {
+            let _ = save_f.take_focus();
+        });
+    }
 
     {
         let mut w2 = win.clone();
@@ -416,6 +422,14 @@ fn more_panel(
         Event::KeyDown if fltk::app::event_key() == Key::Escape => { w.hide(); true }
         _ => false,
     });
+
+    // 开窗后把焦点放到 Close(而非首个动作按钮)→ 回车不会误触 Update/Refresh,焦点框也不落在显眼动作上。
+    {
+        let mut bc = b_close.clone();
+        fltk::app::add_timeout3(0.05, move |_| {
+            let _ = bc.take_focus();
+        });
+    }
 
     // 用量行随托盘一起动:窗开着时每 0.25s 从共享态刷新(倒计时走字、Refresh 后低延迟反映新数据)。
     // 只在文本变了才重绘(避免每秒空刷)。行数变了跳过(留待重开)。
