@@ -93,6 +93,8 @@ pub async fn run(
     notify_tx: Sender<NotifyCmd>,
     alert_en: Arc<AtomicBool>,
     alert_thr: Arc<AtomicU8>,
+    alert_fired: Arc<AtomicBool>, // 去重/武装标志(与设置窗共享):穿过阈值置位,跌回阈值下清零,改设置时被重置
+    cur_util: Arc<AtomicU8>,      // 最近一次 current session 用量,写给设置窗"保存即评估"用
     ui_tx: Sender<crate::ui::UiCmd>,
     lang_zh: Arc<AtomicBool>, // 通知语言(共享):菜单里切换即时生效,无需重启
     lines_shared: Arc<Mutex<Vec<String>>>, // 取数后立即写,弹窗据此低延迟刷新(不必等 1s 定时器)
@@ -108,7 +110,6 @@ pub async fn run(
     let mut notified_status = String::new();
     let mut last_notify: Option<Instant> = None;
     let mut notified_update: Option<String> = None;
-    let mut alerted = false; // 用量提醒去重：穿过阈值置位，跌回阈值下清零
 
     loop {
         touch_heartbeat();
@@ -160,16 +161,20 @@ pub async fn run(
             })
             .await;
 
-        // 用量阈值提醒：current session 穿过阈值 → 发命令给 ui 线程弹醒目闪窗（一次；跌回/重置后才再触发）
+        // 用量阈值提醒：current session 穿过阈值 → 弹一次醒目闪窗;跌回阈值下(或改设置)才重新武装。
+        // alert_fired 与设置窗共享:保存设置会重置它,使新阈值立即有机会触发。cur_util 写给设置窗"保存即评估"。
         if let Some(r) = &raw {
             if let Some(u) = r.five_hour_util {
+                cur_util.store(u.round().clamp(0.0, 100.0) as u8, Ordering::Relaxed);
                 let thr = alert_thr.load(Ordering::Relaxed) as f64;
-                if alert_en.load(Ordering::Relaxed) && u >= thr && !alerted {
-                    alerted = true;
-                    println!("[alert] current session {}% >= {}% → popup", u.round() as i64, thr as u8);
-                    let _ = ui_tx.send(crate::ui::UiCmd::UsageAlert { pct: u.round().clamp(0.0, 100.0) as u8 });
+                if alert_en.load(Ordering::Relaxed) && u >= thr {
+                    if !alert_fired.load(Ordering::Relaxed) {
+                        alert_fired.store(true, Ordering::Relaxed);
+                        println!("[alert] current session {}% >= {}% → popup", u.round() as i64, thr as u8);
+                        let _ = ui_tx.send(crate::ui::UiCmd::UsageAlert { pct: u.round().clamp(0.0, 100.0) as u8 });
+                    }
                 } else if u < thr {
-                    alerted = false;
+                    alert_fired.store(false, Ordering::Relaxed); // 跌回阈值下 → 重新武装
                 }
             }
         }

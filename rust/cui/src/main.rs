@@ -99,6 +99,8 @@ async fn main() -> anyhow::Result<()> {
             let tx = ui::spawn(
                 Arc::new(AtomicBool::new(false)),
                 Arc::new(AtomicU8::new(80)),
+                Arc::new(AtomicBool::new(false)),
+                Arc::new(AtomicU8::new(0)),
                 Arc::new(AtomicBool::new(lang == "zh")),
                 Arc::new(Notify::new()),
                 Arc::new(Notify::new()),
@@ -132,6 +134,8 @@ fn test_ui(lang: &str, alert_en: bool, alert_thr: u8) -> std::sync::mpsc::Sender
     ui::spawn(
         Arc::new(AtomicBool::new(alert_en)),
         Arc::new(AtomicU8::new(alert_thr)),
+        Arc::new(AtomicBool::new(false)),
+        Arc::new(AtomicU8::new(0)),
         Arc::new(AtomicBool::new(lang == "zh")),
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
@@ -161,12 +165,16 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
     let (alert_en0, alert_thr0) = creds::read_alert_cfg();
     let alert_enabled = Arc::new(AtomicBool::new(alert_en0));
     let alert_threshold = Arc::new(AtomicU8::new(alert_thr0));
+    let alert_fired = Arc::new(AtomicBool::new(false)); // 去重/武装(poller 与设置窗共享)
+    let cur_util = Arc::new(AtomicU8::new(0)); // 最近一次 current session 用量(设置窗"保存即评估"用)
     let lang_zh = Arc::new(AtomicBool::new(lang == "zh"));
     // 弹窗顶部用量行的实时数据源:1s 定时器写入最新 usage_lines,More 弹窗每秒读它刷新(和托盘一起动)
     let lines_shared = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
     let ui_tx = ui::spawn(
         alert_enabled.clone(),
         alert_threshold.clone(),
+        alert_fired.clone(),
+        cur_util.clone(),
         lang_zh.clone(),
         refresh.clone(),
         check_update.clone(),
@@ -211,6 +219,6 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
     }
 
     poller::run(handle, client, refresh, show_error, check_update, notify_tx,
-                alert_enabled, alert_threshold, ui_tx, lang_zh, lines_shared, sk, org).await;
+                alert_enabled, alert_threshold, alert_fired, cur_util, ui_tx, lang_zh, lines_shared, sk, org).await;
     Ok(())
 }

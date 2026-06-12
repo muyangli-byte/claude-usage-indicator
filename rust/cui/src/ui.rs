@@ -12,9 +12,15 @@ use crate::config::{BUILD_TAG, REPO_URL, USAGE_PAGE_URL, VERSION};
 use fltk::button::{Button, CheckButton};
 use fltk::enums::{Align, Color, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
-use fltk::misc::Spinner;
+use fltk::input::IntInput;
 use fltk::prelude::*;
 use fltk::window::Window;
+
+/// 阈值输入框 ±delta(钳到 1..100)。−/+ 按钮和键盘上下键共用。
+fn bump(inp: &mut IntInput, delta: i64) {
+    let v = (inp.value().trim().parse::<i64>().unwrap_or(80) + delta).clamp(1, 100);
+    inp.set_value(&v.to_string());
+}
 use tokio::sync::Notify;
 
 pub enum UiCmd {
@@ -31,6 +37,8 @@ fn open(url: &str) {
 pub fn spawn(
     alert_en: Arc<AtomicBool>,
     alert_thr: Arc<AtomicU8>,
+    alert_fired: Arc<AtomicBool>, // 去重/武装标志(与 poller 共享):设置窗保存时重置以重新武装
+    cur_util: Arc<AtomicU8>,      // 最近一次轮询的 current session 用量(设置窗保存时立即评估用)
     lang_zh: Arc<AtomicBool>,
     refresh: Arc<Notify>,
     check_update: Arc<Notify>,
@@ -69,7 +77,15 @@ pub fn spawn(
                                 continue;
                             }
                             let (en, thr) = (alert_en.load(Ordering::Relaxed), alert_thr.load(Ordering::Relaxed));
-                            settings = Some(alert_settings(en, thr, alert_en.clone(), alert_thr.clone()));
+                            settings = Some(alert_settings(
+                                en,
+                                thr,
+                                alert_en.clone(),
+                                alert_thr.clone(),
+                                alert_fired.clone(),
+                                cur_util.clone(),
+                                tx_self.clone(),
+                            ));
                         }
                         UiCmd::MorePanel { lines, update, feedback_url } => {
                             if more.as_ref().map_or(false, |w| w.shown()) {
@@ -139,9 +155,19 @@ fn usage_alert(pct: u8) -> Window {
     win
 }
 
-/// 用量提醒设置窗:第一行开关(CheckButton)、第二行阈值数字(Spinner)、底部 Cancel/Save。
-/// 保存时写共享原子 + 持久化。全英文(与托盘/菜单一致,只有通知是双语)。GTK scheme 下观感接近原生。
-fn alert_settings(enabled: bool, threshold: u8, en: Arc<AtomicBool>, thr: Arc<AtomicU8>) -> Window {
+/// 用量提醒设置窗:第一行开关、第二行阈值(IntInput 可直接打字 + −/+ 按钮 + 键盘上下键)、底部 Cancel/Save。
+/// 保存时:写共享原子 + 持久化,并【重新武装】(改了设置就允许重新触发)+【按当前用量立即评估一次】——
+/// 若已开启且当前用量已达阈值,马上弹,不必等下一次轮询(这正是之前"设了却没弹"的根因)。全英文 chrome。
+#[allow(clippy::too_many_arguments)]
+fn alert_settings(
+    enabled: bool,
+    threshold: u8,
+    en: Arc<AtomicBool>,
+    thr: Arc<AtomicU8>,
+    alert_fired: Arc<AtomicBool>,
+    cur_util: Arc<AtomicU8>,
+    tx: Sender<UiCmd>,
+) -> Window {
     let (sw, sh) = fltk::app::screen_size();
     let (w, h) = (440, 230);
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
@@ -159,23 +185,40 @@ fn alert_settings(enabled: bool, threshold: u8, en: Arc<AtomicBool>, thr: Arc<At
     chk.set_checked(enabled);
     chk.set_label_size(14);
 
-    // 第二行:阈值数字
-    let mut lbl = Frame::new(22, 108, 210, 32, None);
+    // 第二行:阈值。IntInput 直接打字即生效(value() 实时反映,不必回车);−/+ 按钮与键盘上下键各 ±1。
+    let mut lbl = Frame::new(22, 108, 200, 32, None);
     lbl.set_label("Alert when usage reaches:");
     lbl.set_label_size(14);
     lbl.set_align(Align::Left | Align::Inside);
     lbl.set_frame(FrameType::NoBox);
-    let mut sp = Spinner::new(236, 108, 86, 32, None);
-    sp.set_minimum(1.0);
-    sp.set_maximum(100.0);
-    sp.set_step(1.0);
-    sp.set_value(threshold as f64);
-    sp.set_text_size(15);
-    let mut pctf = Frame::new(324, 108, 24, 32, None);
+    let mut minus = Button::new(228, 108, 30, 32, None);
+    minus.set_label("−");
+    let mut input = IntInput::new(260, 108, 56, 32, None);
+    input.set_value(&threshold.to_string());
+    input.set_text_size(15);
+    let mut plus = Button::new(318, 108, 30, 32, None);
+    plus.set_label("+");
+    let mut pctf = Frame::new(352, 108, 24, 32, None);
     pctf.set_label("%");
     pctf.set_label_size(15);
     pctf.set_align(Align::Left | Align::Inside);
     pctf.set_frame(FrameType::NoBox);
+    {
+        let mut inp = input.clone();
+        minus.set_callback(move |_| bump(&mut inp, -1));
+    }
+    {
+        let mut inp = input.clone();
+        plus.set_callback(move |_| bump(&mut inp, 1));
+    }
+    input.handle(|inp, ev| match ev {
+        Event::KeyDown => match fltk::app::event_key() {
+            Key::Up => { bump(inp, 1); true }
+            Key::Down => { bump(inp, -1); true }
+            _ => false,
+        },
+        _ => false,
+    });
 
     let mut cancel = Button::new(w - 210, 176, 92, 34, None);
     cancel.set_label("Cancel");
@@ -192,14 +235,21 @@ fn alert_settings(enabled: bool, threshold: u8, en: Arc<AtomicBool>, thr: Arc<At
     {
         let mut w2 = win.clone();
         let chk2 = chk.clone();
-        let sp2 = sp.clone();
+        let inp2 = input.clone();
         save.set_callback(move |_| {
-            let v = (sp2.value().round() as i64).clamp(1, 100) as u8;
+            let v = inp2.value().trim().parse::<i64>().unwrap_or(threshold as i64).clamp(1, 100) as u8;
             let on = chk2.is_checked();
             en.store(on, Ordering::Relaxed);
             thr.store(v, Ordering::Relaxed);
             crate::creds::write_alert_cfg(on, v);
-            println!("[alert] settings saved: enabled={on} threshold={v}%");
+            alert_fired.store(false, Ordering::Relaxed); // 改了设置 → 重新武装,新阈值有机会触发
+            let u = cur_util.load(Ordering::Relaxed);
+            let fire_now = on && u >= v;
+            if fire_now {
+                alert_fired.store(true, Ordering::Relaxed); // 当前已达阈值 → 立刻弹,并置位避免 poller 重复弹
+                let _ = tx.send(UiCmd::UsageAlert { pct: u });
+            }
+            println!("[alert] saved: enabled={on} threshold={v}% (cur {u}% → {})", if fire_now { "fire now" } else { "armed" });
             w2.hide();
         });
     }
