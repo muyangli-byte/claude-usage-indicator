@@ -21,6 +21,20 @@ fn bump(inp: &mut IntInput, delta: i64) {
     let v = (inp.value().trim().parse::<i64>().unwrap_or(80) + delta).clamp(1, 100);
     inp.set_value(&v.to_string());
 }
+
+/// 窗口图标(任务栏 / WM 标题栏):珊瑚圆角底 + 三根递增白条(用量主题),内联 SVG 自带,无外部资源。
+/// 必须在 show() 之前 set_icon,WM 才会在映射时读取。
+fn set_window_icon(win: &mut Window) {
+    const SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
+<rect x="2" y="2" width="60" height="60" rx="14" fill="#d97757"/>
+<rect x="13" y="34" width="9" height="16" rx="2.5" fill="#ffffff"/>
+<rect x="27.5" y="25" width="9" height="25" rx="2.5" fill="#ffffff"/>
+<rect x="42" y="15" width="9" height="35" rx="2.5" fill="#ffffff"/>
+</svg>"##;
+    if let Ok(img) = fltk::image::SvgImage::from_data(SVG) {
+        win.set_icon(Some(img));
+    }
+}
 use tokio::sync::Notify;
 
 pub enum UiCmd {
@@ -172,6 +186,7 @@ fn alert_settings(
     let (w, h) = (440, 230);
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
     win.set_label("Usage alert");
+    set_window_icon(&mut win);
 
     let mut head = Frame::new(22, 18, w - 44, 28, None);
     head.set_label("Usage alert");
@@ -275,8 +290,8 @@ fn more_panel(
     lines_shared: Arc<Mutex<Vec<String>>>,
     tx: Sender<UiCmd>,
 ) -> Window {
-    // 动作按钮数(refresh,[update],check,open,feedback | lang,alert | about,quit/uninstall,close)
-    let n: i32 = 4 + i32::from(update.is_some()) + 2 + 3;
+    // 动作按钮数:[update?]+refresh+open+check | alert+lang | feedback+about | uninstall/quit+close
+    let n: i32 = 3 + i32::from(update.is_some()) + 2 + 2 + 2;
     // 窗宽要容下 24 格进度条 + 右侧百分比(否则百分比被截掉),与托盘菜单一致
     let (w, bh, gap, grp) = (440, 34, 8, 12);
     let x = 16;
@@ -286,11 +301,12 @@ fn more_panel(
     let info_h = lines.len() as i32 * line_h;
     let sep_y = info_y + info_h + 8; // 文本块底部留白再画分隔线
     let top = sep_y + 14; // 首个按钮在分隔线下方 14px
-    let h = top + n * (bh + gap) + 2 * grp + 8;
+    let h = top + n * (bh + gap) + 3 * grp + 8; // 3 处分组间距
 
     let (sw, sh) = fltk::app::screen_size();
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
     win.set_label("Claude usage");
+    set_window_icon(&mut win);
 
     // 顶部用量行:与托盘菜单同样的文本(bar()+pct())。每行单独一个等高 Frame、垂直居中,行高/间距贴近
     // 托盘菜单的菜单行(比 multiline 单帧的字体固定行距更接近)。灰色仿菜单 disabled 行;默认 sans 渲染方块条。
@@ -318,13 +334,8 @@ fn more_panel(
         b
     };
 
-    // —— 一次性动作:执行后【不】关窗(关闭只通过底部 Close / Esc),否则 Close 没意义 ——
-    let mut b_refresh = mk(0, "Refresh now");
-    {
-        let r = refresh.clone();
-        b_refresh.set_callback(move |_| r.notify_one());
-    }
-
+    // 按钮顺序(用户选定·分组):动作执行后【不】关窗,关闭只通过底部 Close / Esc。
+    // 组1 主要动作:[Update(有更新才显示,置顶高亮)] Refresh / Open page / Check for updates
     if let Some(ver) = update.clone() {
         let mut b_upd = mk(0, &format!("⬆ Update now → v{ver}"));
         b_upd.set_color(Color::from_rgb(0x2e, 0x7d, 0x32)); // 醒目绿
@@ -332,23 +343,31 @@ fn more_panel(
         b_upd.set_callback(move |_| crate::selfupdate::spawn_detached());
     }
 
+    let mut b_refresh = mk(0, "Refresh now");
+    {
+        let r = refresh.clone();
+        b_refresh.set_callback(move |_| r.notify_one());
+    }
+
+    let mut b_open = mk(0, "Open Claude Usage page");
+    b_open.set_callback(move |_| open(USAGE_PAGE_URL));
+
     let mut b_check = mk(0, "Check for updates");
     {
         let c = check_update.clone();
         b_check.set_callback(move |_| c.notify_one());
     }
 
-    let mut b_open = mk(0, "Open Claude Usage page");
-    b_open.set_callback(move |_| open(USAGE_PAGE_URL));
-
-    let mut b_fb = mk(0, "Send feedback / report issue");
+    // 组2 设置:用量提醒 / 通知语言(就地切换,只换取值前缀不变)
+    let mut b_alert = mk(grp, "Usage alert…");
     {
-        let url = feedback_url.clone();
-        b_fb.set_callback(move |_| open(&url));
+        let t = tx.clone();
+        b_alert.set_callback(move |_| {
+            let _ = t.send(UiCmd::AlertSettings); // 开设置窗,More 保持打开
+        });
     }
 
-    // —— 设置类:语言就地切换(只换取值,前缀不变)、用量提醒开设置窗 ——
-    let mut b_lang = mk(grp, &lang_btn_label(lang_zh.load(Ordering::Relaxed)));
+    let mut b_lang = mk(0, &lang_btn_label(lang_zh.load(Ordering::Relaxed)));
     {
         let lz = lang_zh.clone();
         b_lang.set_callback(move |b| {
@@ -360,21 +379,20 @@ fn more_panel(
         });
     }
 
-    let mut b_alert = mk(0, "Usage alert…");
+    // 组3 信息/反馈:反馈 / About
+    let mut b_fb = mk(grp, "Send feedback / report issue");
     {
-        let t = tx.clone();
-        b_alert.set_callback(move |_| {
-            let _ = t.send(UiCmd::AlertSettings); // 开设置窗,More 保持打开
-        });
+        let url = feedback_url.clone();
+        b_fb.set_callback(move |_| open(&url));
     }
 
-    // —— 关于 / 退出 / 关闭 ——
-    let mut b_about = mk(grp, &format!("About (GitHub)  v{VERSION}{BUILD_TAG}"));
+    let mut b_about = mk(0, &format!("About (GitHub)  v{VERSION}{BUILD_TAG}"));
     b_about.set_callback(move |_| open(REPO_URL));
 
+    // 组4 危险操作 + 关闭:Uninstall(prod,红)/ Quit(dev) 紧挨 Close
     #[cfg(not(feature = "dev"))]
     {
-        let mut b_uninstall = mk(0, "Uninstall…");
+        let mut b_uninstall = mk(grp, "Uninstall…");
         b_uninstall.set_color(Color::from_rgb(0xc0, 0x39, 0x2b)); // 危险红
         b_uninstall.set_label_color(Color::White);
         b_uninstall.set_callback(move |_| {
@@ -384,7 +402,7 @@ fn more_panel(
     }
     #[cfg(feature = "dev")]
     {
-        let mut b_quit = mk(0, "Quit (rust-dev)");
+        let mut b_quit = mk(grp, "Quit (rust-dev)");
         b_quit.set_callback(move |_| std::process::exit(0));
     }
 
