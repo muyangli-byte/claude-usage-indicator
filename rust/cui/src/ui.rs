@@ -22,32 +22,11 @@ fn bump(inp: &mut IntInput, delta: i64) {
     inp.set_value(&v.to_string());
 }
 
-/// 窗口图标(任务栏 / WM 标题栏):珊瑚圆角底;左上 1/4 是 Claude 放射状光芒,其余 3/4 横向白条铺满。
-/// 内联 SVG 自带,无外部资源。必须在 show() 之前 set_icon,WM 才会在映射时读取。
+/// 窗口图标(任务栏 / WM 标题栏):珊瑚圆角底,左上是真 Claude 符号(白),右上短条 + 下方长条。
+/// 预合成 PNG(assets/icon.png:珊瑚底 + 真 Claude 符号[白]居左上 + 右上短条 + 下方长条),编进二进制。
+/// 必须在 show() 之前 set_icon,WM 才会在映射时读取。
 fn set_window_icon(win: &mut Window) {
-    const SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-<rect x="2" y="2" width="60" height="60" rx="14" fill="#d97757"/>
-<!-- 右上角:一条短白条(加粗) -->
-<rect x="36" y="12" width="20" height="13" rx="3" fill="#ffffff"/>
-<!-- 下半部:一条长(整宽)白条(加粗) -->
-<rect x="9" y="41" width="46" height="13" rx="3" fill="#ffffff"/>
-<!-- 左上 1/4:Claude 放射状光芒(中心 17,17) -->
-<g stroke="#ffffff" stroke-width="2.4" stroke-linecap="round">
-<line x1="17" y1="17" x2="17" y2="5"/>
-<line x1="17" y1="17" x2="23" y2="6.6"/>
-<line x1="17" y1="17" x2="27.4" y2="11"/>
-<line x1="17" y1="17" x2="29" y2="17"/>
-<line x1="17" y1="17" x2="27.4" y2="23"/>
-<line x1="17" y1="17" x2="23" y2="27.4"/>
-<line x1="17" y1="17" x2="17" y2="29"/>
-<line x1="17" y1="17" x2="11" y2="27.4"/>
-<line x1="17" y1="17" x2="6.6" y2="23"/>
-<line x1="17" y1="17" x2="5" y2="17"/>
-<line x1="17" y1="17" x2="6.6" y2="11"/>
-<line x1="17" y1="17" x2="11" y2="6.6"/>
-</g>
-</svg>"##;
-    if let Ok(img) = fltk::image::SvgImage::from_data(SVG) {
+    if let Ok(img) = fltk::image::PngImage::from_data(include_bytes!("../assets/icon.png")) {
         win.set_icon(Some(img));
     }
 }
