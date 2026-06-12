@@ -234,9 +234,12 @@ fn alert_settings(
     cancel.set_label("Cancel");
     let mut save = Button::new(w - 108, 176, 88, 34, None);
     save.set_label("Save");
+    save.set_visible_focus(); // 仅允许 Save 持有焦点(全局已关焦点框);其余控件不抢焦点
 
     win.end();
     win.show();
+    // 开窗即把键盘焦点放到 Save,而不是阈值输入框 → 输入框不再常驻光标(点它打字时才出现)
+    let _ = save.take_focus();
 
     {
         let mut w2 = win.clone();
