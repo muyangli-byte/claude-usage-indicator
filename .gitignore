@@ -10,3 +10,4 @@ __pycache__/
 diagnostics/
 update_result.txt
 *.bak.*
+rust/cui/assets/claude.png
