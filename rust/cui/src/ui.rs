@@ -83,8 +83,10 @@ pub fn spawn(
                             }
                         }
                         UiCmd::AlertSettings => {
-                            if settings.as_ref().map_or(false, |w| w.shown()) {
-                                continue;
+                            // 关掉旧窗(可能被别的窗盖住,XMapRaised 在 Mutter 下不生效)→ 重建一个新窗,
+                            // 新窗会出现在最上层(与初次打开一致),并重跑去光标的焦点处理。
+                            if let Some(w) = settings.as_mut() {
+                                w.hide();
                             }
                             let (en, thr) = (alert_en.load(Ordering::Relaxed), alert_thr.load(Ordering::Relaxed));
                             settings = Some(alert_settings(
@@ -98,8 +100,9 @@ pub fn spawn(
                             ));
                         }
                         UiCmd::MorePanel { lines, update, feedback_url } => {
-                            if more.as_ref().map_or(false, |w| w.shown()) {
-                                continue;
+                            // 关掉旧窗 → 重建,使其出现在最上层(再点 More 能把被盖住的弹窗调回最前)
+                            if let Some(w) = more.as_mut() {
+                                w.hide();
                             }
                             more = Some(more_panel(
                                 lines,
