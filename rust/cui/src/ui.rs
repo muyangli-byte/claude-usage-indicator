@@ -22,14 +22,34 @@ fn bump(inp: &mut IntInput, delta: i64) {
     inp.set_value(&v.to_string());
 }
 
-/// 窗口图标(任务栏 / WM 标题栏):珊瑚圆角底 + 三根递增白条(用量主题),内联 SVG 自带,无外部资源。
-/// 必须在 show() 之前 set_icon,WM 才会在映射时读取。
+/// 窗口图标(任务栏 / WM 标题栏):珊瑚圆角底;左上 1/4 是 Claude 放射状光芒,其余 3/4 横向白条铺满。
+/// 内联 SVG 自带,无外部资源。必须在 show() 之前 set_icon,WM 才会在映射时读取。
 fn set_window_icon(win: &mut Window) {
     const SVG: &str = r##"<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
 <rect x="2" y="2" width="60" height="60" rx="14" fill="#d97757"/>
-<rect x="13" y="34" width="9" height="16" rx="2.5" fill="#ffffff"/>
-<rect x="27.5" y="25" width="9" height="25" rx="2.5" fill="#ffffff"/>
-<rect x="42" y="15" width="9" height="35" rx="2.5" fill="#ffffff"/>
+<!-- 右上 1/4:横向白条 -->
+<rect x="34" y="8"  width="24" height="5" rx="2" fill="#ffffff"/>
+<rect x="34" y="17" width="24" height="5" rx="2" fill="#ffffff"/>
+<rect x="34" y="26" width="24" height="5" rx="2" fill="#ffffff"/>
+<!-- 下半 1/2:整宽横向白条 -->
+<rect x="7" y="36" width="50" height="5" rx="2" fill="#ffffff"/>
+<rect x="7" y="45" width="50" height="5" rx="2" fill="#ffffff"/>
+<rect x="7" y="54" width="50" height="5" rx="2" fill="#ffffff"/>
+<!-- 左上 1/4:Claude 放射状光芒(中心 17,17) -->
+<g stroke="#ffffff" stroke-width="2.4" stroke-linecap="round">
+<line x1="17" y1="17" x2="17" y2="5"/>
+<line x1="17" y1="17" x2="23" y2="6.6"/>
+<line x1="17" y1="17" x2="27.4" y2="11"/>
+<line x1="17" y1="17" x2="29" y2="17"/>
+<line x1="17" y1="17" x2="27.4" y2="23"/>
+<line x1="17" y1="17" x2="23" y2="27.4"/>
+<line x1="17" y1="17" x2="17" y2="29"/>
+<line x1="17" y1="17" x2="11" y2="27.4"/>
+<line x1="17" y1="17" x2="6.6" y2="23"/>
+<line x1="17" y1="17" x2="5" y2="17"/>
+<line x1="17" y1="17" x2="6.6" y2="11"/>
+<line x1="17" y1="17" x2="11" y2="6.6"/>
+</g>
 </svg>"##;
     if let Ok(img) = fltk::image::SvgImage::from_data(SVG) {
         win.set_icon(Some(img));
