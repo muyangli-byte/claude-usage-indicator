@@ -54,8 +54,8 @@ jobs:
             echo "::error::glibc floor $floor exceeds target $GLIBC_FLOOR — would strand older distros"; exit 1
           fi
           # ── 闸门 2：prod 二进制不得含 dev 身份串 ──
-          if strings "$bin" | grep -qE 'rust-dev|\[rust\]'; then
-            echo "::error::prod binary contains dev-identity tokens (rust-dev / [rust])"; exit 1
+          if strings "$bin" | grep -qE 'claude-usage-indicator-dev|\[dev\]'; then
+            echo "::error::prod binary contains dev-identity tokens (claude-usage-indicator-dev / [dev])"; exit 1
           fi
           arch=$(uname -m)                              # x86_64 — 与 selfupdate.rs 对齐
           strip "$bin"

@@ -1,33 +1,33 @@
-//! 常量 + dev/prod 身份。默认(prod)= 与 Python 逐字一致；`--features dev` 保留 -rust-dev 身份
-//! 供本机与 Python 正式版并存测试。所有带 rust-dev/[rust] 的串都 cfg 到 dev，prod 二进制里没有。
+//! 常量 + dev/prod 身份。默认(prod)= 沿用原 Python 应用的身份（无缝迁移）；`--features dev` 用 -dev 身份
+//! 供 dev 构建与 prod 并存测试。所有带 -dev/[dev] 的串都 cfg 到 dev，prod 二进制里没有。
 
 #[cfg(not(feature = "dev"))]
 pub const APP_ID: &str = "claude-usage-indicator";
 #[cfg(feature = "dev")]
-pub const APP_ID: &str = "claude-usage-indicator-rust-dev";
+pub const APP_ID: &str = "claude-usage-indicator-dev";
 
 #[cfg(not(feature = "dev"))]
 pub const SERVICE: &str = "claude-usage-indicator.service"; // 自更新后重启的 systemd --user 单元
 #[cfg(feature = "dev")]
-pub const SERVICE: &str = "claude-usage-indicator-rust-dev.service";
+pub const SERVICE: &str = "claude-usage-indicator-dev.service";
 
-// 顶栏内联标签前缀：prod 无，dev 加 "[rust] " 以便肉眼区分。
+// 顶栏内联标签前缀：prod 无，dev 加 "[dev] " 以便肉眼区分。
 #[cfg(not(feature = "dev"))]
 pub const LABEL_PREFIX: &str = "";
 #[cfg(feature = "dev")]
-pub const LABEL_PREFIX: &str = "[rust] ";
+pub const LABEL_PREFIX: &str = "[dev] ";
 
-// 版本号显示后缀（--version / About）：prod 无，dev "-rust-dev"。
+// 版本号显示后缀（--version / About）：prod 无，dev "-dev"。
 #[cfg(not(feature = "dev"))]
 pub const BUILD_TAG: &str = "";
 #[cfg(feature = "dev")]
-pub const BUILD_TAG: &str = "-rust-dev";
+pub const BUILD_TAG: &str = "-dev";
 
-// 括号身份后缀（feedback 正文 / doctor 标题）：prod 无，dev " (rust-dev)"。
+// 括号身份后缀（feedback 正文 / doctor 标题）：prod 无，dev " (dev)"。
 #[cfg(not(feature = "dev"))]
 pub const ID_SUFFIX: &str = "";
 #[cfg(feature = "dev")]
-pub const ID_SUFFIX: &str = " (rust-dev)";
+pub const ID_SUFFIX: &str = " (dev)";
 
 // 版本号由 build.rs 从仓库根 VERSION 文件注入，与 Python 同源、永不漂移。
 pub const VERSION: &str = env!("CUI_VERSION");

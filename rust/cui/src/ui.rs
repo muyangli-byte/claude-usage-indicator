@@ -416,7 +416,7 @@ fn more_panel(
     }
     #[cfg(feature = "dev")]
     {
-        let mut b_quit = mk(grp, "Quit (rust-dev)");
+        let mut b_quit = mk(grp, "Quit (dev)");
         b_quit.set_callback(move |_| std::process::exit(0));
     }
 

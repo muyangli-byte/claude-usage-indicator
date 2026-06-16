@@ -125,7 +125,7 @@ impl Tray for CuiTray {
         "Claude usage".into() // 与 Python set_label 标题大小写一致
     }
     fn label(&self) -> String {
-        format!("{}{}", LABEL_PREFIX, self.summary()) // prod 无前缀；dev 加 "[rust] "
+        format!("{}{}", LABEL_PREFIX, self.summary()) // prod 无前缀；dev 加 "[dev] "
     }
     fn icon_name(&self) -> String {
         if self.healthy() {

@@ -147,8 +147,8 @@ def preflight(arch: str) -> bool:
         log(f"preflight: `cui --version` rc={r.returncode} — stay Python")
         _rm(CUI_NEW)
         return False
-    if "rust-dev" in out:
-        log("preflight: binary is a DEV build (contains rust-dev) — refuse")
+    if "-dev" in out:
+        log("preflight: binary is a DEV build (contains -dev) — refuse")
         _rm(CUI_NEW)
         return False
     log(f"preflight OK: {out.strip()} (sha256 verified)")
