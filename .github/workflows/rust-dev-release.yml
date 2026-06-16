@@ -1,0 +1,102 @@
+name: rust-dev-release
+# 【dev 通道】手动发布：构建 --features dev 的二进制，发/刷新一个 GitHub prerelease(固定标签 `dev`)，
+# 并往 dev 专属 ntfy 主题发信号。dev 客户端据此 OTA 自更新 —— 用来在 prod 发版前彩排
+# 「bump → 通知 → 自更新」整条流程，验证无误再对 prod 做。
+#
+# 关键隔离：prerelease + make_latest:false → 这个 release 永不成为 releases/latest。
+# 稳定版用户读 main/VERSION + releases/latest(按定义跳过 prerelease) → 永远看不到 dev 通道；
+# 只有 dev 构建(读 releases/download/dev/...，见 config.rs DOWNLOAD_BASE/VERSION_URLS)才认它。
+#
+# 只手动触发：dev 迭代不该自动发布；要彩排 OTA 时手动 dispatch 一个版本号即可。
+# 注意：workflow_dispatch 的工作流必须先合并到默认分支(main)才会出现在 Actions 的手动运行列表里。
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "dev 版本号(纯数字三段式，如 3.1.0；dev 客户端按它判断是否有更新)"
+        required: true
+
+permissions:
+  contents: write   # action-gh-release 需写权限创建/更新 prerelease
+
+env:
+  GLIBC_FLOOR: "2.28"
+
+jobs:
+  build-and-publish-dev:
+    runs-on: ubuntu-latest
+    container: quay.io/pypa/manylinux_2_28_x86_64
+    steps:
+      - name: Pre-deps (git/tar for checkout in this minimal container)
+        run: dnf install -y git tar gzip || true
+      - uses: actions/checkout@v4
+      - name: System deps (FLTK X11/pango + BoringSSL clang/llvm + modern cmake)
+        run: |
+          dnf install -y dnf-plugins-core || true
+          dnf config-manager --set-enabled powertools 2>/dev/null \
+            || dnf config-manager --set-enabled crb 2>/dev/null || true
+          dnf install -y epel-release || true
+          dnf install -y --setopt=install_weak_deps=False \
+            libX11-devel libXext-devel libXft-devel libXinerama-devel libXcursor-devel \
+            libXrender-devel libXfixes-devel pango-devel cairo-devel fontconfig-devel \
+            clang llvm-devel make gcc gcc-c++ binutils
+          /opt/python/cp311-cp311/bin/pip install cmake
+      - name: Rust toolchain
+        run: curl -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain stable --profile minimal
+      - name: Validate version input (ver_tuple 要求纯数字三段式，否则客户端检测失效)
+        run: |
+          echo "${{ inputs.version }}" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$' \
+            || { echo "::error::version 必须是纯数字三段式，如 3.1.0"; exit 1; }
+      - name: Build dev (native @ glibc 2.28) + gates + checksum + VERSION asset
+        working-directory: rust
+        env:
+          LIBCLANG_PATH: /usr/lib64
+          CMAKE: /opt/python/cp311-cp311/bin/cmake
+        run: |
+          export PATH="$HOME/.cargo/bin:$PATH"
+          VER="${{ inputs.version }}"
+          # 把 dispatch 的版本写进仓库根 VERSION → build.rs 注入 CUI_VERSION（仅本次 CI checkout，不提交）
+          echo "$VER" > ../VERSION
+          cargo build -p cui --release --features dev --locked
+          bin="target/release/cui"
+          # ── 闸门 1：glibc 底线不得超过 2.28（同 prod）──
+          floor=$(objdump -T "$bin" | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sed 's/GLIBC_//' | sort -uV | tail -1)
+          echo "measured glibc floor: ${floor:-none} (target ${GLIBC_FLOOR})"
+          if [ -n "$floor" ] && [ "$(printf '%s\n%s\n' "$GLIBC_FLOOR" "$floor" | sort -V | tail -1)" != "$GLIBC_FLOOR" ]; then
+            echo "::error::glibc floor $floor exceeds target $GLIBC_FLOOR"; exit 1
+          fi
+          # ── 闸门 2（反向）：dev 通道的二进制【必须】含 dev 身份，杜绝把 prod 误发到 dev 通道 ──
+          if ! strings "$bin" | grep -qE 'claude-usage-indicator-dev|\[dev\]'; then
+            echo "::error::built binary lacks dev identity — refusing to publish to dev channel"; exit 1
+          fi
+          # ── 版本自洽：--version 应正好是 <VER>-dev ──
+          got="$("$bin" --version)"
+          [ "$got" = "claude-usage-indicator ${VER}-dev" ] \
+            || { echo "::error::binary --version mismatch: '$got' != 'claude-usage-indicator ${VER}-dev'"; exit 1; }
+          arch=$(uname -m)                              # x86_64 — 与 selfupdate.rs DOWNLOAD_BASE 对齐
+          strip "$bin"
+          cp "$bin" "cui-${arch}-linux"
+          sha256sum "cui-${arch}-linux" > "cui-${arch}-linux.sha256"
+          cat "cui-${arch}-linux.sha256"
+          # 根 VERSION 已是 $VER → 直接当作 dev 通道的 VERSION 资产上传（客户端读 releases/download/dev/VERSION）
+      - name: Publish / refresh `dev` prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: dev
+          prerelease: true
+          make_latest: false
+          name: "dev channel (${{ inputs.version }})"
+          body: >
+            Rolling dev prerelease for the [dev] channel — NOT for end users.
+            Stable clients read releases/latest (which skips prereleases) and never see this.
+          files: |
+            rust/cui-*-linux
+            rust/cui-*-linux.sha256
+            VERSION
+      - name: Notify dev ntfy topic
+        run: |
+          curl -fsSL \
+            -H "Title: Claude Usage Indicator (dev)" \
+            -H "Tags: hammer_and_wrench" \
+            -d "dev v${{ inputs.version }} published — the [dev] tray will re-check and self-update." \
+            "https://ntfy.sh/claude-usage-indicator-dev-muyangli-byte-7c1e9a"
