@@ -79,13 +79,13 @@ pub fn spawn() -> Sender<NotifyCmd> {
                         (Urgency::Normal, Timeout::Milliseconds(12000))
                     };
                     let open_label = if lang == "zh" { "打开用量页" } else { "Open page" };
-                    show(&mut handles, "status", "dialog-warning", &title, &body, u, t, &[("cui-open", open_label)]);
+                    show(&mut handles, "status", "dialog-warning", &title, &body, u, t, &[(crate::config::ACTION_OPEN, open_label)]);
                 }
                 NotifyCmd::Update { ver, lang } => {
                     let title = if lang == "zh" { "发现新版本" } else { "Update available" };
                     let body = format!("v{} → v{}", crate::config::VERSION, ver);
                     let upd_label = if lang == "zh" { "立即更新" } else { "Update now" };
-                    show(&mut handles, "update", "software-update-available", title, &body, Urgency::Critical, Timeout::Never, &[("cui-update", upd_label)]);
+                    show(&mut handles, "update", "software-update-available", title, &body, Urgency::Critical, Timeout::Never, &[(crate::config::ACTION_UPDATE, upd_label)]);
                 }
                 NotifyCmd::Updated { ver, lang } => {
                     let (title, body) = if lang == "zh" {
@@ -150,12 +150,13 @@ pub async fn listen_actions() {
     };
     while let Some(msg) = stream.next().await {
         if let Ok((_id, action)) = msg.body().deserialize::<(u32, String)>() {
-            match action.as_str() {
-                "cui-open" => {
-                    let _ = std::process::Command::new("xdg-open").arg(crate::config::USAGE_PAGE_URL).spawn();
-                }
-                "cui-update" => crate::selfupdate::spawn_detached(),
-                _ => {}
+            // action key 按通道命名(prod=cui-*，dev=cui-*-dev)：只响应本通道自己的按钮。
+            // ActionInvoked 是会话总线广播，dev/prod 同跑时都会收到对方的信号——靠这个区分，
+            // 避免点 prod 通知的「更新/打开」连 dev 一起误触(反之亦然)。
+            if action == crate::config::ACTION_OPEN {
+                let _ = std::process::Command::new("xdg-open").arg(crate::config::USAGE_PAGE_URL).spawn();
+            } else if action == crate::config::ACTION_UPDATE {
+                crate::selfupdate::spawn_detached();
             }
         }
     }

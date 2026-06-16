@@ -70,3 +70,15 @@ pub const DOWNLOAD_BASE: &str =
 #[cfg(feature = "dev")]
 pub const DOWNLOAD_BASE: &str =
     "https://github.com/muyangli-byte/claude-usage-indicator/releases/download/dev";
+
+// 通知按钮 action key：必须按通道区分。org.freedesktop.Notifications 的 ActionInvoked 是会话总线
+// 广播信号——dev/prod 同跑时两个进程都收到全部信号、都按 action key 匹配；若 key 相同，点 prod 通知上的
+// 「更新/打开」会连 dev 一起触发(反之亦然)。加通道后缀后各自只认自己的 key，互不串扰。
+#[cfg(not(feature = "dev"))]
+pub const ACTION_OPEN: &str = "cui-open";
+#[cfg(not(feature = "dev"))]
+pub const ACTION_UPDATE: &str = "cui-update";
+#[cfg(feature = "dev")]
+pub const ACTION_OPEN: &str = "cui-open-dev";
+#[cfg(feature = "dev")]
+pub const ACTION_UPDATE: &str = "cui-update-dev";

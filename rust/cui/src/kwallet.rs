@@ -5,7 +5,10 @@
 //!  ③ 整体超时包住，任一调用挂死也不卡住凭证读取。
 use std::time::Duration;
 
-const APP: &str = "claude-usage-indicator";
+// KWallet 调用方 appid，按通道区分(prod/dev)——仅用于 KWallet 的访问控制/审计署名，
+// 不划分存储命名空间(读的是浏览器自己写的 "{浏览器} Safe Storage" 钥匙，按浏览器名 scope，只读)。
+// cfg 化纯粹是让两条链在 KWallet 审计日志里可区分，不影响读取行为。
+const APP: &str = crate::config::APP_ID;
 
 /// kwalletd6 优先、再 kwalletd5；返回明文密码或 None。
 pub async fn kwallet_password(folder: &str, entry: &str) -> Option<String> {
