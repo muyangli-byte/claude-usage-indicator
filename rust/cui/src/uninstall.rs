@@ -9,6 +9,7 @@ fn home() -> PathBuf {
     PathBuf::from(std::env::var("HOME").unwrap_or_default())
 }
 
+#[cfg(not(feature = "dev"))]
 pub fn spawn_detached_uninstall() {
     let script = home().join(".local/share/claude-usage-indicator/uninstall.sh");
     if script.exists() {
@@ -26,6 +27,7 @@ pub fn spawn_detached_uninstall() {
 }
 
 /// uninstall.sh 不在时的兜底：停服务 + 删哨兵/兄弟bin（run.sh 会回落 Python，或彻底停掉）。
+#[cfg(not(feature = "dev"))]
 fn inline_teardown() {
     let sc = |args: &[&str]| {
         let _ = Command::new("systemctl").args(args).status();
@@ -34,4 +36,26 @@ fn inline_teardown() {
     sc(&["--user", "disable", "--now", "claude-usage-indicator-watchdog.timer"]);
     let _ = std::fs::remove_file(home().join(".config/claude-usage-indicator/use-rust"));
     let _ = std::fs::remove_dir_all(home().join(".local/share/claude-usage-indicator-bin"));
+}
+
+/// dev 链是纯 Rust（无 Python / run.sh / 看门狗）：在分离单元里只拆掉 dev 自己的产物
+/// （服务 + 兄弟 bin + dev 配置/缓存目录 + unit 文件），绝不碰 prod。路径全部按 APP_ID/SERVICE 派生。
+#[cfg(feature = "dev")]
+pub fn spawn_detached_uninstall() {
+    use crate::config::{APP_ID, SERVICE};
+    let h = home();
+    let h = h.to_string_lossy();
+    let script = format!(
+        "systemctl --user disable --now {SERVICE}; \
+         rm -rf '{h}/.local/share/{APP_ID}-bin' '{h}/.config/{APP_ID}' '{h}/.cache/{APP_ID}' \
+                '{h}/.config/systemd/user/{SERVICE}'; \
+         systemctl --user daemon-reload"
+    );
+    if Command::new("systemd-run")
+        .args(["--user", "--collect", "bash", "-c", &script])
+        .spawn()
+        .is_err()
+    {
+        let _ = Command::new("bash").args(["-c", &script]).spawn();
+    }
 }
