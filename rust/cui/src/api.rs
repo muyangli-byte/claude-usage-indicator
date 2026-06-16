@@ -15,27 +15,24 @@ pub fn client() -> Result<Client> {
         .build()?)
 }
 
-/// 查 GitHub 上的最新版本（contents API raw media type，~60s 缓存；失败回退 raw CDN）。对应 Python fetch_remote_version。
+/// 查通道对应的最新版本（按 config::VERSION_URLS 顺序逐个尝试，取第一个成功的）。
+/// prod = contents API(raw media，~60s 缓存) → raw CDN 兜底；dev = `dev` 预发布的 VERSION 资产。
+/// 对应 Python fetch_remote_version。
 pub async fn fetch_remote_version(client: &Client) -> Option<String> {
     let ua = format!("claude-usage-indicator/{}", crate::config::VERSION);
-    let api = "https://api.github.com/repos/muyangli-byte/claude-usage-indicator/contents/VERSION?ref=main";
-    if let Ok(r) = client.get(api).header("user-agent", &ua).header("accept", "application/vnd.github.raw+json").send().await {
-        if r.status().as_u16() == 200 {
-            if let Ok(t) = r.text().await {
-                let t = t.trim().to_string();
-                if !t.is_empty() && !t.starts_with('{') {
-                    return Some(t);
-                }
-            }
+    for url in crate::config::VERSION_URLS {
+        let mut req = client.get(*url).header("user-agent", &ua);
+        // GitHub contents API 需 raw media type 才直接回文本而非 JSON；其它 URL 本就是纯文本。
+        if url.contains("api.github.com") {
+            req = req.header("accept", "application/vnd.github.raw+json");
         }
-    }
-    let raw = "https://raw.githubusercontent.com/muyangli-byte/claude-usage-indicator/main/VERSION";
-    if let Ok(r) = client.get(raw).header("user-agent", &ua).send().await {
-        if r.status().as_u16() == 200 {
-            if let Ok(t) = r.text().await {
-                let t = t.trim().to_string();
-                if !t.is_empty() {
-                    return Some(t);
+        if let Ok(r) = req.send().await {
+            if r.status().as_u16() == 200 {
+                if let Ok(t) = r.text().await {
+                    let t = t.trim().to_string();
+                    if !t.is_empty() && !t.starts_with('{') {
+                        return Some(t);
+                    }
                 }
             }
         }

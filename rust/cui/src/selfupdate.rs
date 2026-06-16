@@ -1,7 +1,7 @@
 //! 自更新（对齐 Python --self-update 的意图，但改为「下载预编译二进制」）：
 //! 查 GitHub 最新版 → 下载本架构的 release 二进制 → 原子替换当前 exe → 重启 systemd 服务。
 //! 需要发版 CI 产出 release 资产 cui-<arch>-linux（见 .github/workflows/rust-release.yml）。
-use crate::config::{APP_ID, SERVICE, VERSION};
+use crate::config::{APP_ID, DOWNLOAD_BASE, SERVICE, VERSION};
 use crate::api;
 use cui_core::remote_is_newer;
 use sha2::{Digest, Sha256};
@@ -87,9 +87,7 @@ pub async fn cmd_self_update() -> i32 {
     }
 
     let arch = std::env::consts::ARCH; // x86_64 / aarch64
-    let url = format!(
-        "https://github.com/muyangli-byte/claude-usage-indicator/releases/latest/download/cui-{arch}-linux"
-    );
+    let url = format!("{DOWNLOAD_BASE}/cui-{arch}-linux"); // prod=releases/latest；dev=`dev` 预发布
     println!("self-update: v{VERSION} → v{remote}; downloading {url}");
     let resp = match client.get(&url).send().await {
         Ok(r) => r,

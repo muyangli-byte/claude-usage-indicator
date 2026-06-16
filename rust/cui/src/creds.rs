@@ -90,8 +90,14 @@ pub fn scan_profiles() -> Vec<(&'static str, String, Option<String>)> {
     out
 }
 
+/// 自身配置文件路径，按 APP_ID 分通道：prod=~/.config/claude-usage-indicator/config.json（不变，
+/// 老用户无感）；dev=~/.config/claude-usage-indicator-dev/config.json（与 prod 完全隔离）。
+fn config_path() -> PathBuf {
+    home().join(".config").join(crate::config::APP_ID).join("config.json")
+}
+
 fn read_config() -> serde_json::Value {
-    std::fs::read_to_string(home().join(".config/claude-usage-indicator/config.json"))
+    std::fs::read_to_string(config_path())
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or(serde_json::Value::Null)
@@ -107,7 +113,7 @@ pub fn read_alert_cfg() -> (bool, u8) {
 
 /// 把用量提醒配置写回 config.json（读+合并+写，保留其它键如 lang/session_key）。
 pub fn write_alert_cfg(enabled: bool, threshold: u8) {
-    let path = home().join(".config/claude-usage-indicator/config.json");
+    let path = config_path();
     let mut v = read_config();
     if !v.is_object() {
         v = serde_json::json!({});
@@ -122,7 +128,7 @@ pub fn write_alert_cfg(enabled: bool, threshold: u8) {
 
 /// 把通知语言写回 config.json（读+合并+写，保留其它键如 alert_*/session_key）。
 pub fn write_lang(zh: bool) {
-    let path = home().join(".config/claude-usage-indicator/config.json");
+    let path = config_path();
     let mut v = read_config();
     if !v.is_object() {
         v = serde_json::json!({});
