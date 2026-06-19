@@ -38,8 +38,7 @@ async fn main() -> anyhow::Result<()> {
             "--test-settings" => cmd = "testsettings", // 只弹设置窗
             #[cfg(feature = "dev")]
             "--test-more" => cmd = "testmore", // 弹 More 动作面板
-            #[cfg(feature = "dev")]
-            "--accounts" => cmd = "accounts", // 列出发现的全部账号(多账号调试，不打印 sessionKey)
+            "--accounts" => cmd = "accounts", // 列出发现的账号(多账号诊断，不打印 sessionKey；prod 也可用)
             "--version" | "-V" => cmd = "version",
             "--help" | "-h" => cmd = "help",
             "--lang" => {
@@ -117,7 +116,6 @@ async fn main() -> anyhow::Result<()> {
             });
             std::thread::sleep(Duration::from_secs(130));
         }
-        #[cfg(feature = "dev")]
         "accounts" => {
             let client = api::client()?;
             let accts = creds::discover_accounts(&client).await;
