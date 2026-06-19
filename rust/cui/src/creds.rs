@@ -6,7 +6,7 @@ use anyhow::{anyhow, Result};
 use cui_core::{valid_org, valid_sk};
 use secret_service::{EncryptionType, SecretService};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
@@ -272,18 +272,18 @@ pub async fn load_credentials() -> Result<(String, String)> {
         }
         for f in files {
             let (csk, corg) = read_creds_from_db(&f, &pw);
+            let csk = csk.filter(|s| valid_sk(s));
+            let corg = corg.filter(|o| valid_org(o));
+            // sk 必须与【同一 profile】的 org 配对，绝不跨 profile 借 org——否则两个账号在两个
+            // profile 时会出现 sk_A + org_B，该 sessionKey 无权访问那个 org → usage 接口 401/403 死循环。
+            if let (Some(s), Some(o)) = (&csk, &corg) {
+                return Ok((s.clone(), o.clone())); // 同源完整配对，最优
+            }
             if sk.is_none() {
-                if let Some(s) = csk.filter(|s| valid_sk(s)) {
+                if let Some(s) = csk {
                     sk = Some(s);
+                    org = corg; // 同 profile 的 org（可能 None），不从别的 profile 借
                 }
-            }
-            if org.is_none() {
-                if let Some(o) = corg.filter(|o| valid_org(o)) {
-                    org = Some(o);
-                }
-            }
-            if let (Some(s), Some(o)) = (&sk, &org) {
-                return Ok((s.clone(), o.clone()));
             }
         }
     }
@@ -294,4 +294,129 @@ pub async fn load_credentials() -> Result<(String, String)> {
         }
         None => Err(anyhow!("no claude.ai cookie found (logged in? right browser?)")),
     }
+}
+
+// ───────────────────────── 多账号 ─────────────────────────
+// 一个「账号」= sessionKey + 它自己的 org（同一 profile 同一登录），sk 与 org 永远同源、绝不混配。
+// 一个 sessionKey 下可有多个 org（公司+个人同登录）；不同 profile 是不同登录 → 各自的 sk。
+#[derive(Clone, Debug)]
+pub struct Account {
+    pub session_key: String,
+    pub org_id: String,
+    pub org_name: String,
+    pub source: String, // "Chrome/Default" 等，仅用于同名 org 的消歧
+}
+
+fn browser_label(app: &str) -> &'static str {
+    match app {
+        "chrome" => "Chrome",
+        "chromium" => "Chromium",
+        "brave" => "Brave",
+        "microsoft-edge" => "Edge",
+        _ => "Browser",
+    }
+}
+
+/// 收集每个浏览器 profile 里【有效 sessionKey + 它同 profile 的 lastActiveOrg + 来源标签】。
+/// 与 load_credentials 同样的解密逻辑，但收集【全部】profile（不在第一个就返回）。
+async fn collect_profile_creds() -> Vec<(String, Option<String>, String)> {
+    let ss = SecretService::connect(EncryptionType::Plain).await.ok();
+    let mut out = Vec::new();
+    for (app, kw, bases) in BROWSERS {
+        let files = profile_cookie_files(bases);
+        if files.is_empty() {
+            continue;
+        }
+        let mut pw = match &ss {
+            Some(s) => safe_storage_key(s, app).await.unwrap_or_default(),
+            None => Vec::new(),
+        };
+        if pw.is_empty() {
+            if let Some(k) =
+                crate::kwallet::kwallet_password(&format!("{kw} Keys"), &format!("{kw} Safe Storage")).await
+            {
+                pw = k.into_bytes();
+            }
+        }
+        for f in &files {
+            let (csk, corg) = read_creds_from_db(f, &pw);
+            if let Some(s) = csk.filter(|s| valid_sk(s)) {
+                let label = format!("{}/{}", browser_label(app), profile_label(f));
+                out.push((s, corg.filter(|o| valid_org(o)), label));
+            }
+        }
+    }
+    out
+}
+
+/// 枚举所有可用账号：每个 profile 的 sk 调 /api/organizations 取该登录下全部 org（含名字）；
+/// 取不到（离线/挑战）则用该 profile 自己的 lastActiveOrg 兜底。按 org_id 去重。sk 永远与 org 同源。
+pub async fn discover_accounts(client: &wreq::Client) -> Vec<Account> {
+    let cfg = read_config();
+    let cfg_sk = cfg.get("session_key").and_then(|v| v.as_str()).filter(|s| valid_sk(s)).map(String::from);
+    let cfg_org = cfg.get("org_id").and_then(|v| v.as_str()).filter(|o| valid_org(o)).map(String::from);
+
+    // 显式 pin（sk+org 都配）→ 单账号，保留手动覆盖逃生口（不再枚举浏览器）。
+    if let (Some(s), Some(o)) = (&cfg_sk, &cfg_org) {
+        let name = crate::api::fetch_organizations(client, s)
+            .await
+            .ok()
+            .and_then(|orgs| orgs.into_iter().find(|x| &x.uuid == o).map(|x| x.name))
+            .unwrap_or_default();
+        return vec![Account { session_key: s.clone(), org_id: o.clone(), org_name: name, source: "configured".into() }];
+    }
+
+    let mut profiles = collect_profile_creds().await;
+    // config 只配了 sk → 也作为一个来源（排最前）
+    if let Some(s) = cfg_sk {
+        profiles.insert(0, (s, cfg_org, "configured".into()));
+    }
+
+    let mut accounts: Vec<Account> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for (sk, last_org, source) in profiles {
+        match crate::api::fetch_organizations(client, &sk).await {
+            Ok(orgs) if !orgs.is_empty() => {
+                for o in orgs {
+                    if seen.insert(o.uuid.clone()) {
+                        accounts.push(Account { session_key: sk.clone(), org_id: o.uuid, org_name: o.name, source: source.clone() });
+                    }
+                }
+            }
+            _ => {
+                // 离线兜底：用该 profile 自己的 lastActiveOrg（仍同源，不混配）
+                if let Some(o) = last_org {
+                    if seen.insert(o.clone()) {
+                        accounts.push(Account { session_key: sk.clone(), org_id: o, org_name: String::new(), source: source.clone() });
+                    }
+                }
+            }
+        }
+    }
+    accounts
+}
+
+/// 选当前账号：config.active_org 命中优先，否则第一个。空列表返回 None。
+pub fn pick_active(accounts: &[Account]) -> Option<Account> {
+    let want = read_config().get("active_org").and_then(|v| v.as_str()).map(String::from);
+    if let Some(w) = want {
+        if let Some(a) = accounts.iter().find(|a| a.org_id == w) {
+            return Some(a.clone());
+        }
+    }
+    accounts.first().cloned()
+}
+
+/// 持久化选中的 org（切换账号时写 config.json 的 active_org，保留其它键）。
+pub fn write_active_org(org_id: &str) {
+    let path = config_path();
+    let mut v = read_config();
+    if !v.is_object() {
+        v = serde_json::json!({});
+    }
+    v["active_org"] = serde_json::Value::String(org_id.to_string());
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(&path, serde_json::to_string_pretty(&v).unwrap_or_default());
 }

@@ -65,3 +65,39 @@ pub async fn fetch_usage(client: &Client, sk: &str, org: &str) -> Result<Raw> {
         .map_err(|_| if is_challenge { anyhow!("cloudflare: HTTP 200 challenge") } else { anyhow!("schema: response is not JSON") })?;
     cui_core::validate_and_extract(&j).map_err(|e| anyhow!("schema: {}", e.0))
 }
+
+/// 一个组织(公司/个人账号)。多账号枚举与切换用。
+#[derive(Clone, Debug)]
+pub struct Org {
+    pub uuid: String,
+    pub name: String,
+}
+
+/// 列出该 sessionKey 可访问的所有组织。对应 claude.ai web 的 `GET /api/organizations`（返回数组）。
+/// sessionKey 仅放 cookie，绝不落日志。失败(网络/挑战/非200)返回 Err，调用方应离线兜底。
+pub async fn fetch_organizations(client: &Client, sk: &str) -> Result<Vec<Org>> {
+    let r = client
+        .get("https://claude.ai/api/organizations")
+        .header("accept", "*/*")
+        .header("anthropic-client-platform", "web_claude_ai")
+        .header("referer", "https://claude.ai/new")
+        .header("cookie", format!("sessionKey={sk}"))
+        .send()
+        .await?;
+    let status = r.status().as_u16();
+    if status != 200 {
+        return Err(anyhow!("http: HTTP {status}"));
+    }
+    let txt = r.text().await?;
+    let j: serde_json::Value =
+        serde_json::from_str(&txt).map_err(|_| anyhow!("schema: organizations not JSON"))?;
+    let arr = j.as_array().ok_or_else(|| anyhow!("schema: organizations not an array"))?;
+    let mut out = Vec::new();
+    for o in arr {
+        if let Some(uuid) = o.get("uuid").and_then(|v| v.as_str()) {
+            let name = o.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            out.push(Org { uuid: uuid.to_string(), name });
+        }
+    }
+    Ok(out)
+}

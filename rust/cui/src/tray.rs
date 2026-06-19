@@ -2,11 +2,12 @@
 //! Status 行、Show error details（出故障时）、More…（点开 fltk 动作面板）。
 //! 顶栏内联文字走 XAyatanaLabel（patched ksni）。
 use crate::config::{APP_ID, ID_SUFFIX, LABEL_PREFIX, REPO_URL, VERSION};
+use crate::creds::Account;
 use cui_core::{bar, fmt_countdown, fmt_countdown_long, fmt_resetday, fmt_resetday_long, pct, Raw};
-use ksni::menu::StandardItem;
+use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
 use ksni::{MenuItem, ToolTip, Tray};
 use std::sync::mpsc::Sender;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::Notify;
 
@@ -29,6 +30,22 @@ pub struct CuiTray {
     pub show_error: Option<Arc<Notify>>, // "Show error details" → 让 poller 弹当前故障通知
     pub consecutive: u32,                // 连续失败次数（Status 行 >1 时显示 (xN)，对齐 Python）
     pub ui_tx: Option<Sender<crate::ui::UiCmd>>, // 点「More…」→ 发 MorePanel 让 fltk 弹动作面板
+    pub accounts: Arc<Mutex<Vec<Account>>>, // 全部可选账号(多账号切换列表，与 main/ui 共享)
+    pub active: Arc<Mutex<Option<Account>>>, // 当前选中账号(与 poller 共享，切换即写、下一轮生效)
+    pub refresh: Option<Arc<Notify>>,        // 切换账号后触发立即重拉
+}
+
+/// 账号在列表里的显示名：org 名优先；同名 org 才追加来源(浏览器/profile)消歧；无名退回来源/uuid 前缀。
+fn account_label(accounts: &[Account], a: &Account) -> String {
+    if a.org_name.is_empty() {
+        return if a.source.is_empty() { a.org_id.chars().take(8).collect() } else { a.source.clone() };
+    }
+    let collides = accounts.iter().filter(|x| x.org_name == a.org_name).count() > 1;
+    if collides && !a.source.is_empty() {
+        format!("{} · {}", a.org_name, a.source)
+    } else {
+        a.org_name.clone()
+    }
 }
 
 impl CuiTray {
@@ -162,6 +179,43 @@ impl Tray for CuiTray {
             ));
         }
         items.push(MenuItem::Separator);
+
+        // 多账号(公司/个人)切换：>1 个账号才显示。点选即切当前 usage 来源 + 持久化 active_org + 立即刷新。
+        let accounts = self.accounts.lock().ok().map(|g| g.clone()).unwrap_or_default();
+        if accounts.len() > 1 {
+            let active_org =
+                self.active.lock().ok().and_then(|g| g.clone()).map(|a| a.org_id).unwrap_or_default();
+            let sub: Vec<MenuItem<Self>> = accounts
+                .iter()
+                .map(|a| {
+                    let chosen = a.clone();
+                    CheckmarkItem {
+                        label: account_label(&accounts, a),
+                        checked: a.org_id == active_org,
+                        activate: Box::new(move |t: &mut CuiTray| {
+                            if let Ok(mut g) = t.active.lock() {
+                                *g = Some(chosen.clone());
+                            }
+                            crate::creds::write_active_org(&chosen.org_id);
+                            if let Some(n) = &t.refresh {
+                                n.notify_one();
+                            }
+                        }),
+                        ..Default::default()
+                    }
+                    .into()
+                })
+                .collect();
+            let cur = self
+                .active
+                .lock()
+                .ok()
+                .and_then(|g| g.clone())
+                .map(|a| account_label(&accounts, &a))
+                .unwrap_or_else(|| "—".into());
+            items.push(SubMenu { label: format!("Account: {cur}"), submenu: sub, ..Default::default() }.into());
+            items.push(MenuItem::Separator);
+        }
 
         // More：整合成一个按钮 → 点开 fltk 弹窗，原 More 子菜单里的所有动作(刷新/检查更新/打开页面/
         // 反馈/语言/用量提醒/About/卸载)都在窗里。update_available 与 feedback_url 取点击时的快照传过去。

@@ -38,6 +38,8 @@ async fn main() -> anyhow::Result<()> {
             "--test-settings" => cmd = "testsettings", // 只弹设置窗
             #[cfg(feature = "dev")]
             "--test-more" => cmd = "testmore", // 弹 More 动作面板
+            #[cfg(feature = "dev")]
+            "--accounts" => cmd = "accounts", // 列出发现的全部账号(多账号调试，不打印 sessionKey)
             "--version" | "-V" => cmd = "version",
             "--help" | "-h" => cmd = "help",
             "--lang" => {
@@ -113,6 +115,15 @@ async fn main() -> anyhow::Result<()> {
             });
             std::thread::sleep(Duration::from_secs(130));
         }
+        #[cfg(feature = "dev")]
+        "accounts" => {
+            let client = api::client()?;
+            let accts = creds::discover_accounts(&client).await;
+            println!("发现 {} 个账号:", accts.len());
+            for a in &accts {
+                println!("  org={}  name={:?}  source={}", a.org_id, a.org_name, a.source);
+            }
+        }
         "version" => println!("claude-usage-indicator {}{}", config::VERSION, config::BUILD_TAG),
         "help" => println!(
             "claude-usage-indicator{} — Claude usage tray\n\nUSAGE:\n  cui                          run the tray (default)\n  \
@@ -144,17 +155,17 @@ fn test_ui(lang: &str, alert_en: bool, alert_thr: u8) -> std::sync::mpsc::Sender
 }
 
 async fn run_gui(lang: String) -> anyhow::Result<()> {
-    let (sk, org) = match creds::load_credentials().await {
-        Ok(v) => {
-            println!("[creds] 已自读凭证 (org={})", v.1);
-            v
-        }
-        Err(e) => {
-            eprintln!("[creds] {e}");
-            (String::new(), String::new())
-        }
-    };
     let client = api::client()?;
+    // 多账号：枚举全部账号(公司/个人) → 选当前(config.active_org 命中优先，否则第一个)。
+    // sk 与 org 永远同源(同一登录)，绝不跨 profile 混配 → 修掉两账号时的 401 死循环。
+    let accounts = creds::discover_accounts(&client).await;
+    let active0 = creds::pick_active(&accounts);
+    match &active0 {
+        Some(a) => println!("[creds] active org={} ({} 个账号可选)", a.org_id, accounts.len()),
+        None => eprintln!("[creds] 未发现可用账号 (已登录? 钥匙环解锁?)"),
+    }
+    let accounts_shared = Arc::new(std::sync::Mutex::new(accounts));
+    let active_shared = Arc::new(std::sync::Mutex::new(active0));
     let refresh = Arc::new(Notify::new());
     let show_error = Arc::new(Notify::new());
     let check_update = Arc::new(Notify::new());
@@ -190,6 +201,9 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
         status: "init".into(),
         show_error: Some(show_error.clone()),
         ui_tx: Some(ui_tx.clone()),
+        accounts: accounts_shared.clone(),
+        active: active_shared.clone(),
+        refresh: Some(refresh.clone()),
         ..Default::default()
     };
     let handle = tray.spawn().await?;
@@ -219,6 +233,6 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
     }
 
     poller::run(handle, client, refresh, show_error, check_update, notify_tx,
-                alert_enabled, alert_threshold, alert_fired, cur_util, ui_tx, lang_zh, lines_shared, sk, org).await;
+                alert_enabled, alert_threshold, alert_fired, cur_util, ui_tx, lang_zh, lines_shared, active_shared).await;
     Ok(())
 }

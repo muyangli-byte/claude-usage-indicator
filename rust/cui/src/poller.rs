@@ -98,12 +98,10 @@ pub async fn run(
     ui_tx: Sender<crate::ui::UiCmd>,
     lang_zh: Arc<AtomicBool>, // 通知语言(共享):菜单里切换即时生效,无需重启
     lines_shared: Arc<Mutex<Vec<String>>>, // 取数后立即写,弹窗据此低延迟刷新(不必等 1s 定时器)
-    mut sk: String,
-    mut org: String,
+    active: Arc<Mutex<Option<creds::Account>>>, // 当前账号(托盘/More 面板可随时切换),每轮读
 ) {
     let mut stable = 0u32;
     let mut last_snap: Option<Snap> = None;
-    let mut force_creds = sk.is_empty() || org.is_empty();
     let mut last_ver_check: Option<Instant> = None;
     // 通知策略状态
     let mut consecutive = 0u32;
@@ -114,24 +112,17 @@ pub async fn run(
     loop {
         touch_heartbeat();
         let lang = if lang_zh.load(Ordering::Relaxed) { "zh" } else { "en" }; // 每轮取最新(语言可被菜单切换)
-        if force_creds {
-            if let Ok((s, o)) = creds::load_credentials().await {
-                sk = s;
-                org = o;
-            }
-            force_creds = false;
-        }
-
-        let (status, error, raw): (String, String, Option<Raw>) = if sk.is_empty() || org.is_empty() {
-            ("cookie".into(), "no valid sessionKey (login? keyring locked?)".into(), None)
-        } else {
-            match api::fetch_usage(&client, &sk, &org).await {
+        // 当前账号(可被托盘/More 面板随时切换)：每轮读共享态，切换后下一轮(refresh 唤醒)即生效。
+        let acct = active.lock().ok().and_then(|g| g.clone());
+        let (status, error, raw): (String, String, Option<Raw>) = match &acct {
+            None => ("cookie".into(), "no valid sessionKey (login? keyring locked?)".into(), None),
+            Some(a) => match api::fetch_usage(&client, &a.session_key, &a.org_id).await {
                 Ok(r) => ("ok".into(), String::new(), Some(r)),
                 Err(e) => {
                     let m = e.to_string();
                     (classify(&m).into(), m, None)
                 }
-            }
+            },
         };
 
         let changed = matches!((&raw, &last_snap), (Some(r), Some(prev)) if snap(r) != *prev);
@@ -212,7 +203,7 @@ pub async fn run(
         let mut do_check = false;
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
-            _ = refresh.notified() => { force_creds = true; }
+            _ = refresh.notified() => {} // 唤醒即可：循环顶部会重读 active(可能已被切换)并重拉
             _ = show_error.notified() => { fire_error = true; }
             _ = check_update.notified() => { do_check = true; } // "Check for updates" / ntfy 推送
         }
