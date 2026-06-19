@@ -36,7 +36,8 @@ pub struct CuiTray {
 }
 
 /// 账号在列表里的显示名：org 名优先；同名 org 才追加来源(浏览器/profile)消歧；无名退回来源/uuid 前缀。
-fn account_label(accounts: &[Account], a: &Account) -> String {
+/// 托盘子菜单与 More 面板共用，保证两处标签一致。
+pub(crate) fn account_label(accounts: &[Account], a: &Account) -> String {
     if a.org_name.is_empty() {
         return if a.source.is_empty() { a.org_id.chars().take(8).collect() } else { a.source.clone() };
     }

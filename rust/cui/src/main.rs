@@ -107,6 +107,8 @@ async fn main() -> anyhow::Result<()> {
                 Arc::new(Notify::new()),
                 Arc::new(Notify::new()),
                 lines_shared.clone(),
+                Arc::new(std::sync::Mutex::new(Vec::new())), // accounts(调试空)
+                Arc::new(std::sync::Mutex::new(None)),       // active(调试无)
             );
             let _ = tx.send(ui::UiCmd::MorePanel {
                 lines: lines_shared.lock().unwrap().clone(),
@@ -151,6 +153,8 @@ fn test_ui(lang: &str, alert_en: bool, alert_thr: u8) -> std::sync::mpsc::Sender
         Arc::new(Notify::new()),
         Arc::new(Notify::new()),
         Arc::new(std::sync::Mutex::new(Vec::new())), // 调试无实时源,弹窗维持初始快照
+        Arc::new(std::sync::Mutex::new(Vec::new())), // accounts(调试空)
+        Arc::new(std::sync::Mutex::new(None)),       // active(调试无)
     )
 }
 
@@ -190,6 +194,8 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
         refresh.clone(),
         check_update.clone(),
         lines_shared.clone(),
+        accounts_shared.clone(),
+        active_shared.clone(),
     );
 
     // 刚自更新过 → 开机弹一次「已更新到 vX」

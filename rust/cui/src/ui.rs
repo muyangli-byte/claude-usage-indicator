@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 
 use crate::config::{BUILD_TAG, REPO_URL, USAGE_PAGE_URL, VERSION};
+use crate::creds::Account;
 use fltk::button::{Button, CheckButton};
 use fltk::enums::{Align, Color, Event, Font, FrameType, Key};
 use fltk::frame::Frame;
@@ -52,6 +53,8 @@ pub fn spawn(
     refresh: Arc<Notify>,
     check_update: Arc<Notify>,
     lines_shared: Arc<Mutex<Vec<String>>>, // 托盘每秒写入最新 usage_lines,弹窗据此实时刷新
+    accounts_shared: Arc<Mutex<Vec<Account>>>, // 全部可选账号(多账号切换列表，与托盘/poller 共享)
+    active_shared: Arc<Mutex<Option<Account>>>, // 当前选中账号(切换即写，poller 下一轮生效)
 ) -> Sender<UiCmd> {
     let (tx, rx) = mpsc::channel::<UiCmd>();
     let tx_self = tx.clone(); // 给窗口里的按钮用(如「用量提醒…」回投 AlertSettings)
@@ -104,14 +107,24 @@ pub fn spawn(
                             if let Some(w) = more.as_mut() {
                                 w.hide();
                             }
+                            let accts = accounts_shared.lock().ok().map(|g| g.clone()).unwrap_or_default();
+                            let active_org = active_shared
+                                .lock()
+                                .ok()
+                                .and_then(|g| g.clone())
+                                .map(|a| a.org_id)
+                                .unwrap_or_default();
                             more = Some(more_panel(
                                 lines,
                                 update,
                                 feedback_url,
+                                accts,
+                                active_org,
                                 lang_zh.clone(),
                                 refresh.clone(),
                                 check_update.clone(),
                                 lines_shared.clone(),
+                                active_shared.clone(),
                                 tx_self.clone(),
                             ));
                         }
@@ -297,14 +310,20 @@ fn more_panel(
     lines: Vec<String>,
     update: Option<String>,
     feedback_url: String,
+    accounts: Vec<Account>,
+    active_org: String,
     lang_zh: Arc<AtomicBool>,
     refresh: Arc<Notify>,
     check_update: Arc<Notify>,
     lines_shared: Arc<Mutex<Vec<String>>>,
+    active_shared: Arc<Mutex<Option<Account>>>,
     tx: Sender<UiCmd>,
 ) -> Window {
-    // 动作按钮数:[update?]+refresh+open+check | alert+lang | feedback+about | uninstall/quit+close
-    let n: i32 = 3 + i32::from(update.is_some()) + 2 + 2 + 2;
+    // >1 个账号才显示「账号切换」组(组0)
+    let n_acct: i32 = if accounts.len() > 1 { accounts.len() as i32 } else { 0 };
+    // 动作按钮数:[账号*N]+[update?]+refresh+open+check | alert+lang | feedback+about | uninstall/quit+close
+    let n: i32 = n_acct + 3 + i32::from(update.is_some()) + 2 + 2 + 2;
+    let groups: i32 = 3 + i32::from(n_acct > 0); // 账号组存在时多一处分组间距
     // 窗宽要容下 24 格进度条 + 右侧百分比(否则百分比被截掉),与托盘菜单一致
     let (w, bh, gap, grp) = (440, 34, 8, 12);
     let x = 16;
@@ -314,7 +333,7 @@ fn more_panel(
     let info_h = lines.len() as i32 * line_h;
     let sep_y = info_y + info_h + 8; // 文本块底部留白再画分隔线
     let top = sep_y + 14; // 首个按钮在分隔线下方 14px
-    let h = top + n * (bh + gap) + 3 * grp + 8; // 3 处分组间距
+    let h = top + n * (bh + gap) + groups * grp + 8;
 
     let (sw, sh) = fltk::app::screen_size();
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
@@ -348,16 +367,42 @@ fn more_panel(
         b
     };
 
+    // 组0 多账号(公司/个人)切换:● = 当前选中。点选即切 active + 持久化 active_org + 立即刷新 + 关窗
+    //（重开/托盘即显示新选中；窗顶用量行也会在刷新后跟着变成新账号）。>1 账号才有此组。
+    if n_acct > 0 {
+        for a in &accounts {
+            let active = a.org_id == active_org;
+            let dot = if active { "●" } else { "○" };
+            let mut b = mk(0, &format!("{dot}  {}", crate::tray::account_label(&accounts, a)));
+            if active {
+                b.set_label_color(Color::from_rgb(0x2e, 0x7d, 0x32)); // 选中绿
+            }
+            let chosen = a.clone();
+            let act = active_shared.clone();
+            let r = refresh.clone();
+            let mut wc = win.clone();
+            b.set_callback(move |_| {
+                if let Ok(mut g) = act.lock() {
+                    *g = Some(chosen.clone());
+                }
+                crate::creds::write_active_org(&chosen.org_id);
+                r.notify_one();
+                wc.hide();
+            });
+        }
+    }
+    let g0 = if n_acct > 0 { grp } else { 0 }; // 账号组与主动作组之间的分组间距
+
     // 按钮顺序(用户选定·分组):动作执行后【不】关窗,关闭只通过底部 Close / Esc。
     // 组1 主要动作:[Update(有更新才显示,置顶高亮)] Refresh / Open page / Check for updates
     if let Some(ver) = update.clone() {
-        let mut b_upd = mk(0, &format!("⬆ Update now → v{ver}"));
+        let mut b_upd = mk(g0, &format!("⬆ Update now → v{ver}"));
         b_upd.set_color(Color::from_rgb(0x2e, 0x7d, 0x32)); // 醒目绿
         b_upd.set_label_color(Color::White);
         b_upd.set_callback(move |_| crate::selfupdate::spawn_detached());
     }
 
-    let mut b_refresh = mk(0, "Refresh now");
+    let mut b_refresh = mk(if update.is_some() { 0 } else { g0 }, "Refresh now");
     {
         let r = refresh.clone();
         b_refresh.set_callback(move |_| r.notify_one());
