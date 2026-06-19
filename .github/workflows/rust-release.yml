@@ -77,3 +77,21 @@ jobs:
           path: |
             rust/cui-*-linux
             rust/cui-*-linux.sha256
+      # 手动 dispatch 时把【prod 二进制】发到一个 prerelease(固定标签 prod-test)，用于发版前真机验证
+      # (如多账号修复)。关键隔离：prerelease + make_latest:false + 不 bump VERSION →
+      # 永不成为 releases/latest、不发 ntfy、不触发任何人 OTA；只有拿到 apply 脚本的人会去 curl 它。
+      - name: Publish prod TEST prerelease (manual runs)
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: prod-test
+          prerelease: true
+          make_latest: false
+          name: "prod test build (UNRELEASED — verify only)"
+          body: >
+            Unreleased prod binary for pre-release verification. NOT a real release:
+            never becomes releases/latest, no VERSION bump, no notify, no OTA.
+            Apply with cui-apply-binary.sh / the fix script; delete after verifying.
+          files: |
+            rust/cui-*-linux
+            rust/cui-*-linux.sha256
