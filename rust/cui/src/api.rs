@@ -95,6 +95,16 @@ pub async fn fetch_organizations(client: &Client, sk: &str) -> Result<Vec<Org>> 
     let mut out = Vec::new();
     for o in arr {
         if let Some(uuid) = o.get("uuid").and_then(|v| v.as_str()) {
+            // 只保留有 claude.ai 「chat」能力的 org —— 那才是有 5h/7天用量的真实账号。
+            // Team/Enterprise 会给成员自动建一个「Individual Org」，但它是纯 API/Console org
+            // (capabilities=["api","api_individual"]、无 "chat")，没有 claude.ai 用量 → 不进切换列表。
+            let has_chat = o
+                .get("capabilities")
+                .and_then(|v| v.as_array())
+                .map_or(false, |a| a.iter().any(|c| c.as_str() == Some("chat")));
+            if !has_chat {
+                continue;
+            }
             let name = o.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
             out.push(Org { uuid: uuid.to_string(), name });
         }
