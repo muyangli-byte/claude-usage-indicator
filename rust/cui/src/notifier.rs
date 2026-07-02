@@ -23,10 +23,11 @@ fn notify_msg(status: &str, lang: &str) -> (String, String) {
         (t.to_string(), b.to_string())
     };
     match status {
-        "auth" => pick("登录已过期\x1f去 Chrome 打开 claude.ai 重新登录即可恢复。", "Login expired\x1fRe-login to claude.ai in Chrome to restore."),
+        "auth" => pick("Claude 登录已过期\x1f① 在 Chrome 重新登录 claude.ai ② 若仍旧报错，完全退出 Chrome 再重开。", "Claude login expired\x1f1) Re-login to claude.ai in Chrome  2) If it persists, fully quit Chrome and reopen."),
         "cloudflare" => pick("被 Cloudflare 拦截\x1fTLS 伪装可能失效，脚本或许需要更新；详见 diagnostics 目录。", "Blocked by Cloudflare\x1fTLS impersonation may have broken; the tool might need an update."),
         "schema" => pick("接口结构变了\x1f用量接口字段变化，脚本需要更新。", "API schema changed\x1fThe usage API changed; the tool needs an update."),
-        "cookie" => pick("读不到登录态\x1f钥匙环可能锁着。解锁钥匙环，或在 config.json 填 session_key+org_id。", "Can't read login\x1fKeyring may be locked. Unlock it, or set session_key+org_id in config.json."),
+        // 读不到 sessionKey 最常见的原因是浏览器把登录 cookie 只留在内存、没写盘 → 重启 Chrome 即可
+        "cookie" => pick("读不到 Claude 登录\x1f① 在 Chrome 登录 claude.ai ② 若已登录仍报此错，完全退出 Chrome 再重开（登录 cookie 可能没存到磁盘）。", "Can't read your Claude login\x1f1) Sign in to claude.ai in Chrome  2) If already signed in, fully quit Chrome and reopen (login cookie may not be saved to disk)."),
         "network" => pick("网络错误\x1f稍后会自动重试。", "Network error\x1fWill retry automatically."),
         "http" => pick("请求失败\x1f稍后会自动重试。", "Request failed\x1fWill retry automatically."),
         _ => pick("用量异常", "Usage error"),
