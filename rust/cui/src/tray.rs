@@ -126,7 +126,12 @@ impl CuiTray {
         // 按模型周限（来自 limits[]，模型名动态：Fable / Opus / …）—— 用过才显示
         for s in &r.scoped {
             if used(s.util, s.reset.is_some()) {
-                v.push(format!("{} only", s.name));
+                // 与「All models | Resets …」同款:带重置时刻(weekly_scoped 的 resets_at 是周重置)
+                v.push(if s.reset.is_some() {
+                    format!("{} only | Resets {}", s.name, fmt_resetday_long(s.reset))
+                } else {
+                    format!("{} only", s.name)
+                });
                 v.push(format!("{}  {:>4}", bar(s.util, bar_n), pct(s.util)));
             }
         }

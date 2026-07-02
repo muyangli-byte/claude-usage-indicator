@@ -83,7 +83,7 @@ async fn main() -> anyhow::Result<()> {
                 format!("{}  {:>4}", cui_core::bar(Some(80.0), tray::POPUP_BAR), cui_core::pct(Some(80.0))),
                 "All models | Resets Tue 14:00".into(),
                 format!("{}  {:>4}", cui_core::bar(Some(35.0), tray::POPUP_BAR), cui_core::pct(Some(35.0))),
-                "Fable only".into(),
+                "Fable only | Resets Mon 6:59 AM".into(),
                 format!("{}  {:>4}", cui_core::bar(Some(13.0), tray::POPUP_BAR), cui_core::pct(Some(13.0))),
                 "Status: ok | Last updated: 0s ago".to_string(),
             ]));
