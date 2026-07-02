@@ -78,15 +78,31 @@ async fn main() -> anyhow::Result<()> {
         }
         #[cfg(feature = "dev")]
         "testmore" => {
-            let lines_shared = Arc::new(std::sync::Mutex::new(vec![
-                "Current session | Resets in 4h 12m".into(),
-                format!("{}  {:>4}", cui_core::bar(Some(80.0), tray::POPUP_BAR), cui_core::pct(Some(80.0))),
-                "All models | Resets Tue 14:00".into(),
-                format!("{}  {:>4}", cui_core::bar(Some(35.0), tray::POPUP_BAR), cui_core::pct(Some(35.0))),
-                "Fable only | Resets Mon 6:59 AM".into(),
-                format!("{}  {:>4}", cui_core::bar(Some(13.0), tray::POPUP_BAR), cui_core::pct(Some(13.0))),
-                "Status: ok | Last updated: 0s ago".to_string(),
-            ]));
+            // 拉真实用量渲染(和正式托盘同一 usage_lines),取不到才退回假数据 —— 让 --test-more 展示可信数据。
+            let real_lines = async {
+                let client = api::client().ok()?;
+                let (sk, org) = creds::load_credentials().await.ok()?;
+                let raw = api::fetch_usage(&client, &sk, &org).await.ok()?;
+                let t = tray::CuiTray {
+                    raw: Some(raw),
+                    status: "ok".into(),
+                    received_at: Some(std::time::Instant::now()),
+                    ..Default::default()
+                };
+                Some(t.usage_lines(tray::POPUP_BAR))
+            }
+            .await;
+            let lines_shared = Arc::new(std::sync::Mutex::new(real_lines.unwrap_or_else(|| {
+                vec![
+                    "Current session | Resets in 4h 12m".into(),
+                    format!("{}  {:>4}", cui_core::bar(Some(80.0), tray::POPUP_BAR), cui_core::pct(Some(80.0))),
+                    "All models | Resets Mon 6:59 AM".into(),
+                    format!("{}  {:>4}", cui_core::bar(Some(35.0), tray::POPUP_BAR), cui_core::pct(Some(35.0))),
+                    "Fable only | Resets Mon 6:59 AM".into(),
+                    format!("{}  {:>4}", cui_core::bar(Some(13.0), tray::POPUP_BAR), cui_core::pct(Some(13.0))),
+                    "Status: ok | Last updated: 0s ago".to_string(),
+                ]
+            })));
             // 模拟托盘 1s 定时器:每秒更新「Last updated」秒数 → 验证弹窗实时刷新
             {
                 let ls = lines_shared.clone();
