@@ -147,7 +147,7 @@ pub async fn run(
                 }
                 // 取数即写共享态 → 弹窗下一次(0.25s)轮询即可见,不必等每秒定时器
                 if let Ok(mut g) = ls.lock() {
-                    *g = t.usage_lines();
+                    *g = t.usage_lines(crate::tray::POPUP_BAR);
                 }
             })
             .await;

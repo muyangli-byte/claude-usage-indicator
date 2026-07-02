@@ -80,11 +80,11 @@ async fn main() -> anyhow::Result<()> {
         "testmore" => {
             let lines_shared = Arc::new(std::sync::Mutex::new(vec![
                 "Current session | Resets in 4h 12m".into(),
-                format!("{}  {:>4}", cui_core::bar(Some(80.0), 16), cui_core::pct(Some(80.0))),
+                format!("{}  {:>4}", cui_core::bar(Some(80.0), tray::POPUP_BAR), cui_core::pct(Some(80.0))),
                 "All models | Resets Tue 14:00".into(),
-                format!("{}  {:>4}", cui_core::bar(Some(35.0), 16), cui_core::pct(Some(35.0))),
+                format!("{}  {:>4}", cui_core::bar(Some(35.0), tray::POPUP_BAR), cui_core::pct(Some(35.0))),
                 "Fable only".into(),
-                format!("{}  {:>4}", cui_core::bar(Some(13.0), 16), cui_core::pct(Some(13.0))),
+                format!("{}  {:>4}", cui_core::bar(Some(13.0), tray::POPUP_BAR), cui_core::pct(Some(13.0))),
                 "Status: ok | Last updated: 0s ago".to_string(),
             ]));
             // 模拟托盘 1s 定时器:每秒更新「Last updated」秒数 → 验证弹窗实时刷新
@@ -233,7 +233,7 @@ async fn run_gui(lang: String) -> anyhow::Result<()> {
                 // 重绘托盘 + 把最新用量行写入共享态(倒计时每秒走字),供 More 弹窗实时刷新
                 let _ = h.update(move |t| {
                     if let Ok(mut g) = ls2.lock() {
-                        *g = t.usage_lines();
+                        *g = t.usage_lines(tray::POPUP_BAR);
                     }
                 }).await;
             }

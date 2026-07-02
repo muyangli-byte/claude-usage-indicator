@@ -11,6 +11,10 @@ use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use tokio::sync::Notify;
 
+/// 进度条格数：托盘下拉菜单用短条(避开 host 尾部截断)，More 弹窗用长条(填满 440px 窗宽)。
+pub(crate) const TRAY_BAR: usize = 16;
+pub(crate) const POPUP_BAR: usize = 22; // 22 格是 440px 弹窗内「条+2空格+100%」不裁切的最大长度(实测 ~12.7px/字符)
+
 fn urlencode(s: &str) -> String {
     s.bytes()
         .map(|b| match b {
@@ -105,25 +109,25 @@ impl CuiTray {
         );
         format!("{REPO_URL}/issues/new?title={}&body={}", urlencode("Feedback: "), urlencode(&body))
     }
-    /// 用量进度条文本（托盘菜单与 More 弹窗同源,保证「完全一样」）：4 行基础 + Fable/Opus（用过才有）+ Status 行。
-    /// main 的 1s 定时器也调它写入共享态,供弹窗实时刷新(倒计时走字)。
-    pub(crate) fn usage_lines(&self) -> Vec<String> {
+    /// 用量进度条文本（托盘菜单与 More 弹窗同源、同样式：条+行尾百分比）。`bar_n` = 进度条格数：
+    /// - 托盘下拉菜单用 [`TRAY_BAR`]（短）：菜单宽度由桌面 host 按最长项动态定、尾部 ellipsis 截断，
+    ///   条太长会把行尾百分比切掉(13%→1…)；缩短到比文字行(Current session…)更短 → 必然放得下、不截。
+    /// - More 弹窗用 [`POPUP_BAR`]（长）：弹窗固定 440px、从不截断，用长条填满窗宽、更好看。
+    /// 两处样式一致(都是 ▕█░▏+右侧%)，只是条长按各自容器宽度适配。main 的 1s 定时器也调它刷新弹窗。
+    pub(crate) fn usage_lines(&self, bar_n: usize) -> Vec<String> {
         let r = self.raw.clone().unwrap_or_default();
         let used = |u: Option<f64>, has_reset: bool| has_reset || u.map_or(false, |v| v != 0.0);
         let mut v = vec![
             format!("Current session | Resets in {}", fmt_countdown_long(r.five_hour_reset)),
-            // 百分比放行尾(用户要的样式)。托盘菜单宽度由桌面 host 动态定、尾部 ellipsis 截断,
-            // 进度条太长会把行尾百分比切掉(13%→1…)。故把条缩到 16 格,让「条+百分比」行比上面的
-            // 文字行(Current session…/All models…)更短 → 菜单宽度由文字行决定、这行必然放得下、不截断。
-            format!("{}  {:>4}", bar(r.five_hour_util, 16), pct(r.five_hour_util)),
+            format!("{}  {:>4}", bar(r.five_hour_util, bar_n), pct(r.five_hour_util)),
             format!("All models | Resets {}", fmt_resetday_long(r.seven_day_reset)),
-            format!("{}  {:>4}", bar(r.seven_day_util, 16), pct(r.seven_day_util)),
+            format!("{}  {:>4}", bar(r.seven_day_util, bar_n), pct(r.seven_day_util)),
         ];
         // 按模型周限（来自 limits[]，模型名动态：Fable / Opus / …）—— 用过才显示
         for s in &r.scoped {
             if used(s.util, s.reset.is_some()) {
                 v.push(format!("{} only", s.name));
-                v.push(format!("{}  {:>4}", bar(s.util, 16), pct(s.util)));
+                v.push(format!("{}  {:>4}", bar(s.util, bar_n), pct(s.util)));
             }
         }
         v.push(format!(
@@ -168,7 +172,7 @@ impl Tray for CuiTray {
         let act = |label: String, f: Box<dyn Fn(&mut Self) + Send>| -> MenuItem<Self> {
             StandardItem { label, activate: f, ..Default::default() }.into()
         };
-        let mut items: Vec<MenuItem<Self>> = self.usage_lines().into_iter().map(dim).collect();
+        let mut items: Vec<MenuItem<Self>> = self.usage_lines(TRAY_BAR).into_iter().map(dim).collect();
         if !self.healthy() {
             // 出故障：点开把具体故障以通知弹出（对齐 Python "Show error details"）
             let se = self.show_error.clone();
@@ -227,7 +231,7 @@ impl Tray for CuiTray {
             Box::new(|t: &mut CuiTray| {
                 if let Some(tx) = &t.ui_tx {
                     let _ = tx.send(crate::ui::UiCmd::MorePanel {
-                        lines: t.usage_lines(),
+                        lines: t.usage_lines(POPUP_BAR),
                         update: t.update_available.clone(),
                         feedback_url: t.feedback_url(),
                     });
