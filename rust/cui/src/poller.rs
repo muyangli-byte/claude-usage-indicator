@@ -5,7 +5,7 @@ use crate::config::{POLL_ERROR_S, POLL_FAST_S, POLL_SLOW_S, RENOTIFY_BAD_S, UPDA
 use crate::notifier::NotifyCmd;
 use crate::tray::CuiTray;
 use crate::{api, creds};
-use cui_core::{remote_is_newer, should_notify_bad, Raw};
+use cui_core::{any_reset_within, remote_is_newer, should_notify_bad, Raw};
 use ksni::Handle;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -43,12 +43,13 @@ fn touch_heartbeat() {
     }
 }
 
-fn next_interval(status: &str, changed: bool, stable: &mut u32) -> u64 {
+fn next_interval(status: &str, changed: bool, reset_soon: bool, stable: &mut u32) -> u64 {
     if status != "ok" {
         *stable = 0;
         return POLL_ERROR_S;
     }
-    if changed {
+    // 数据变了 或 邻近 reset(任一档 <5min 归零)→ 快轮,及时反映
+    if changed || reset_soon {
         *stable = 0;
         return POLL_FAST_S;
     }
@@ -125,7 +126,13 @@ pub async fn run(
             },
         };
 
-        let changed = matches!((&raw, &last_snap), (Some(r), Some(prev)) if snap(r) != *prev);
+        let changed = match (&raw, &last_snap) {
+            (Some(r), Some(prev)) => snap(r) != *prev,
+            (Some(_), None) => true, // 首次拿到数据(启动/首次错误恢复)→ 视作变化,立即快轮而非退到 10s
+            _ => false,
+        };
+        // 邻近 reset(任一档 <5min 归零)→ 让 next_interval 主动快轮
+        let reset_soon = raw.as_ref().map_or(false, |r| any_reset_within(r, 300));
         if let Some(r) = &raw {
             last_snap = Some(snap(r));
         }
@@ -194,15 +201,18 @@ pub async fn run(
             do_version_check(&client, &notify_tx, lang, &handle, &mut notified_update, &mut last_ver_check, false).await;
         }
 
-        let interval = next_interval(&status, changed, &mut stable);
-        let tag = if changed { ", changed" } else { "" };
+        let interval = next_interval(&status, changed, reset_soon, &mut stable);
+        // 退避(非快轮)时加每进程抖动 0..=5s:dev/prod 多实例同账号空闲时错开轮询节拍,降低同步撞 403。
+        // 活跃 5s 不抖动(保持响应)。用 PID 取模,无需 RNG 依赖、同进程内稳定。
+        let jitter = if interval > POLL_FAST_S { (std::process::id() % 6) as u64 } else { 0 };
+        let tag = if changed { ", changed" } else if reset_soon { ", reset-soon" } else { "" };
         let extra = if error.is_empty() { String::new() } else { format!(" :: {error}") };
-        println!("[poll] {status} (next {interval}s{tag}){extra}");
+        println!("[poll] {status} (next {interval}+{jitter}s{tag}){extra}");
 
         let mut fire_error = false;
         let mut do_check = false;
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(interval)) => {}
+            _ = tokio::time::sleep(Duration::from_secs(interval + jitter)) => {}
             _ = refresh.notified() => {} // 唤醒即可：循环顶部会重读 active(可能已被切换)并重拉
             _ = show_error.notified() => { fire_error = true; }
             _ = check_update.notified() => { do_check = true; } // "Check for updates" / ntfy 推送

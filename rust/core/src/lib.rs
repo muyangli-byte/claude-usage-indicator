@@ -131,6 +131,19 @@ pub fn validate_and_extract(data: &serde_json::Value) -> Result<Raw, SchemaError
     Ok(json_to_raw(data))
 }
 
+/// 是否有任一档(5h/周/按模型)的重置时刻落在「未来 within_secs 秒内」。
+/// 邻近 reset 时用量即将归零,poller 据此主动切快轮,及时抓到归零、倒计时不陈旧。
+pub fn any_reset_within(r: &Raw, within_secs: i64) -> bool {
+    let now = Utc::now();
+    let soon = |dt: Option<DateTime<Utc>>| {
+        dt.map_or(false, |d| {
+            let s = (d - now).num_seconds();
+            s > 0 && s <= within_secs
+        })
+    };
+    soon(r.five_hour_reset) || soon(r.seven_day_reset) || r.scoped.iter().any(|s| soon(s.reset))
+}
+
 // ===================== 格式化（渲染层即时计算） =====================
 /// 百分比：None→"--"，否则四舍五入整数%（对应 Python _pct）。
 pub fn pct(u: Option<f64>) -> String {
@@ -437,6 +450,24 @@ mod tests {
         assert_eq!(rn.scoped[0].util, Some(26.0));
         assert!(rn.scoped[0].reset.is_some());
         assert!(validate_and_extract(&jn).is_ok());
+    }
+
+    #[test]
+    fn test_any_reset_within() {
+        let soon = Utc::now() + chrono::Duration::seconds(120);
+        let far = Utc::now() + chrono::Duration::seconds(1000);
+        let mut r = Raw::default();
+        assert!(!any_reset_within(&r, 300)); // 无 reset
+        r.five_hour_reset = Some(far);
+        assert!(!any_reset_within(&r, 300)); // 1000s > 300
+        r.five_hour_reset = Some(soon);
+        assert!(any_reset_within(&r, 300)); // 120s ≤ 300
+        // scoped 档的 reset 也算
+        let r2 = Raw {
+            scoped: vec![ScopedLimit { name: "Fable".into(), util: Some(10.0), reset: Some(soon) }],
+            ..Default::default()
+        };
+        assert!(any_reset_within(&r2, 300));
     }
 
     #[test]
