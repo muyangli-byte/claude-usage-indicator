@@ -9,10 +9,17 @@ pub struct Raw {
     pub five_hour_reset: Option<DateTime<Utc>>,
     pub seven_day_util: Option<f64>,
     pub seven_day_reset: Option<DateTime<Utc>>,
-    pub fable_util: Option<f64>, // 原 Sonnet，2026-07 起 claude.ai 改名 Fable
-    pub fable_reset: Option<DateTime<Utc>>,
-    pub opus_util: Option<f64>,
-    pub opus_reset: Option<DateTime<Utc>>,
+    /// 各「按模型」周限（2026-07 起 API 用 limits[] 数组承载，模型名动态如 "Fable"）。
+    /// 老 schema 的 seven_day_sonnet/opus 已废(返回 null)，仅在无 limits[] 时作兜底。
+    pub scoped: Vec<ScopedLimit>,
+}
+
+/// 一档「按模型」的周限（来自 limits[] 的 weekly_scoped，或老 schema 的 seven_day_<model>）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScopedLimit {
+    pub name: String, // 展示名，如 "Fable" / "Opus"（来自 scope.model.display_name）
+    pub util: Option<f64>,
+    pub reset: Option<DateTime<Utc>>,
 }
 
 /// 接口结构不符（对应 Python SchemaError）。
@@ -41,20 +48,58 @@ fn util(o: &serde_json::Value) -> Option<f64> {
 fn reset(o: &serde_json::Value) -> Option<DateTime<Utc>> {
     parse_iso(o.get("resets_at").and_then(|x| x.as_str()))
 }
+// limits[] 条目：利用率在 "percent"（整数），重置在 "resets_at"。
+fn lim_util(o: &serde_json::Value) -> Option<f64> {
+    o.get("percent").and_then(|x| x.as_f64())
+}
+
+/// 老 schema 兜底：无 limits[] 时，从 seven_day_<model> 键取按模型周限。
+fn scoped_fallback(j: &serde_json::Value) -> Vec<ScopedLimit> {
+    let mut v = Vec::new();
+    for (key, name) in [("seven_day_sonnet", "Sonnet"), ("seven_day_opus", "Opus")] {
+        if let Some(o) = j.get(key) {
+            let (u, r) = (util(o), reset(o));
+            if u.is_some() || r.is_some() {
+                v.push(ScopedLimit { name: name.into(), util: u, reset: r });
+            }
+        }
+    }
+    v
+}
 
 /// 抽取原始数值/时间（对应 Python json_to_raw）。
+/// 2026-07 新 schema：用量在顶层 `limits[]` 数组里（kind=session / weekly_all / weekly_scoped[按模型]）；
+/// 顶层 five_hour/seven_day 仍在但按模型的 seven_day_<x> 已废。优先读 limits[]，缺失时回退顶层老键。
 pub fn json_to_raw(j: &serde_json::Value) -> Raw {
     let g = |k: &str| j.get(k);
+    let (mut fh_u, mut fh_r, mut sd_u, mut sd_r) = (None, None, None, None);
+    let mut scoped: Vec<ScopedLimit> = Vec::new();
+    if let Some(arr) = j.get("limits").and_then(|v| v.as_array()) {
+        for l in arr {
+            match l.get("kind").and_then(|x| x.as_str()) {
+                Some("session") => (fh_u, fh_r) = (lim_util(l), reset(l)),
+                Some("weekly_all") => (sd_u, sd_r) = (lim_util(l), reset(l)),
+                Some("weekly_scoped") => {
+                    let name = l
+                        .get("scope")
+                        .and_then(|s| s.get("model"))
+                        .and_then(|m| m.get("display_name"))
+                        .and_then(|x| x.as_str())
+                        .unwrap_or("")
+                        .to_string();
+                    scoped.push(ScopedLimit { name, util: lim_util(l), reset: reset(l) });
+                }
+                _ => {}
+            }
+        }
+    }
     Raw {
-        five_hour_util: g("five_hour").and_then(util),
-        five_hour_reset: g("five_hour").and_then(reset),
-        seven_day_util: g("seven_day").and_then(util),
-        seven_day_reset: g("seven_day").and_then(reset),
-        // 第二档模型：新键 seven_day_fable 优先，回退老键 seven_day_sonnet(兼容未切/已切两种 API)
-        fable_util: g("seven_day_fable").or_else(|| g("seven_day_sonnet")).and_then(util),
-        fable_reset: g("seven_day_fable").or_else(|| g("seven_day_sonnet")).and_then(reset),
-        opus_util: g("seven_day_opus").and_then(util),
-        opus_reset: g("seven_day_opus").and_then(reset),
+        // limits[] 优先；缺失回退顶层 five_hour/seven_day 老键
+        five_hour_util: fh_u.or_else(|| g("five_hour").and_then(util)),
+        five_hour_reset: fh_r.or_else(|| g("five_hour").and_then(reset)),
+        seven_day_util: sd_u.or_else(|| g("seven_day").and_then(util)),
+        seven_day_reset: sd_r.or_else(|| g("seven_day").and_then(reset)),
+        scoped: if scoped.is_empty() { scoped_fallback(j) } else { scoped },
     }
 }
 
@@ -62,6 +107,10 @@ pub fn json_to_raw(j: &serde_json::Value) -> Raw {
 pub fn validate_and_extract(data: &serde_json::Value) -> Result<Raw, SchemaError> {
     if !data.is_object() {
         return Err(SchemaError("top level is not an object".into()));
+    }
+    // 新 schema：有非空 limits[] 即认（用量都在里面），不再强求顶层 five_hour/seven_day。
+    if data.get("limits").and_then(|v| v.as_array()).is_some_and(|a| !a.is_empty()) {
+        return Ok(json_to_raw(data));
     }
     for key in ["five_hour", "seven_day"] {
         match data.get(key) {
@@ -362,17 +411,32 @@ mod tests {
             "seven_day_sonnet": {"utilization": 12},
             "seven_day_opus": {"utilization": 0}
         });
+        // 老 schema：无 limits[]，回退顶层键 + seven_day_sonnet/opus → scoped
         let raw = json_to_raw(&j);
         assert_eq!(raw.five_hour_util, Some(39.0));
         assert_eq!(raw.seven_day_util, Some(5.0));
-        assert_eq!(raw.fable_util, Some(12.0)); // 老键 seven_day_sonnet 回退仍生效
-        assert_eq!(raw.opus_util, Some(0.0));
+        assert_eq!(raw.scoped.iter().find(|s| s.name == "Sonnet").and_then(|s| s.util), Some(12.0));
         assert!(raw.five_hour_reset.is_some());
-        assert_eq!(raw.opus_reset, None);
         assert_eq!(json_to_raw(&serde_json::json!({})).five_hour_util, None);
-        // 新键 seven_day_fable 优先
-        let jf = serde_json::json!({"seven_day_fable": {"utilization": 20}});
-        assert_eq!(json_to_raw(&jf).fable_util, Some(20.0));
+
+        // 新 schema：limits[] 数组（session/weekly_all/weekly_scoped[按模型 display_name]）
+        let jn = serde_json::json!({
+            "five_hour": {"utilization": 99},  // 顶层仍在但应被 limits 覆盖
+            "limits": [
+                {"kind": "session", "percent": 23, "resets_at": "2026-07-02T23:00:00Z"},
+                {"kind": "weekly_all", "percent": 17, "resets_at": "2026-07-06T13:59:59Z"},
+                {"kind": "weekly_scoped", "percent": 26, "resets_at": "2026-07-06T13:59:59Z",
+                 "scope": {"model": {"display_name": "Fable"}}}
+            ]
+        });
+        let rn = json_to_raw(&jn);
+        assert_eq!(rn.five_hour_util, Some(23.0)); // limits[session] 覆盖顶层 99
+        assert_eq!(rn.seven_day_util, Some(17.0));
+        assert_eq!(rn.scoped.len(), 1);
+        assert_eq!(rn.scoped[0].name, "Fable");
+        assert_eq!(rn.scoped[0].util, Some(26.0));
+        assert!(rn.scoped[0].reset.is_some());
+        assert!(validate_and_extract(&jn).is_ok());
     }
 
     #[test]

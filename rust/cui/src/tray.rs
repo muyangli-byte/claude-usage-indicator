@@ -116,13 +116,12 @@ impl CuiTray {
             format!("All models | Resets {}", fmt_resetday_long(r.seven_day_reset)),
             format!("{}  {:>4}", bar(r.seven_day_util, 24), pct(r.seven_day_util)),
         ];
-        if used(r.fable_util, r.fable_reset.is_some()) {
-            v.push("Fable only".into());
-            v.push(format!("{}  {:>4}", bar(r.fable_util, 24), pct(r.fable_util)));
-        }
-        if used(r.opus_util, r.opus_reset.is_some()) {
-            v.push("Opus only".into());
-            v.push(format!("{}  {:>4}", bar(r.opus_util, 24), pct(r.opus_util)));
+        // 按模型周限（来自 limits[]，模型名动态：Fable / Opus / …）—— 用过才显示
+        for s in &r.scoped {
+            if used(s.util, s.reset.is_some()) {
+                v.push(format!("{} only", s.name));
+                v.push(format!("{}  {:>4}", bar(s.util, 24), pct(s.util)));
+            }
         }
         v.push(format!(
             "Status: {}{}{} | Last updated: {}",

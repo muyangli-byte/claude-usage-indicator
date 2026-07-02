@@ -31,8 +31,9 @@ pub async fn cmd_once() -> i32 {
         Ok(r) => {
             println!("  current session : {}  (reset {})", pct(r.five_hour_util), fmt_countdown(r.five_hour_reset));
             println!("  all models (wk) : {}  (reset {})", pct(r.seven_day_util), fmt_resetday(r.seven_day_reset));
-            println!("  fable (wk)      : {}", pct(r.fable_util));
-            println!("  opus (wk)       : {}", pct(r.opus_util));
+            for s in &r.scoped {
+                println!("  {:<15} : {}", format!("{} (wk)", s.name), pct(s.util));
+            }
             0
         }
         Err(e) => {
