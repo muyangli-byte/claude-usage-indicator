@@ -112,17 +112,18 @@ impl CuiTray {
         let used = |u: Option<f64>, has_reset: bool| has_reset || u.map_or(false, |v| v != 0.0);
         let mut v = vec![
             format!("Current session | Resets in {}", fmt_countdown_long(r.five_hour_reset)),
-            // 百分比放【行首】：托盘菜单宽度由桌面 host 动态定、尾部 ellipsis 截断。放行尾会切掉关键数字
-            // (13%→1…);放行首后被切的只是进度条尾巴(░),百分比永远可见。总长度不变、More 弹窗不受影响。
-            format!("{:>4}  {}", pct(r.five_hour_util), bar(r.five_hour_util, 24)),
+            // 百分比放行尾(用户要的样式)。托盘菜单宽度由桌面 host 动态定、尾部 ellipsis 截断,
+            // 进度条太长会把行尾百分比切掉(13%→1…)。故把条缩到 16 格,让「条+百分比」行比上面的
+            // 文字行(Current session…/All models…)更短 → 菜单宽度由文字行决定、这行必然放得下、不截断。
+            format!("{}  {:>4}", bar(r.five_hour_util, 16), pct(r.five_hour_util)),
             format!("All models | Resets {}", fmt_resetday_long(r.seven_day_reset)),
-            format!("{:>4}  {}", pct(r.seven_day_util), bar(r.seven_day_util, 24)),
+            format!("{}  {:>4}", bar(r.seven_day_util, 16), pct(r.seven_day_util)),
         ];
         // 按模型周限（来自 limits[]，模型名动态：Fable / Opus / …）—— 用过才显示
         for s in &r.scoped {
             if used(s.util, s.reset.is_some()) {
                 v.push(format!("{} only", s.name));
-                v.push(format!("{:>4}  {}", pct(s.util), bar(s.util, 24)));
+                v.push(format!("{}  {:>4}", bar(s.util, 16), pct(s.util)));
             }
         }
         v.push(format!(
