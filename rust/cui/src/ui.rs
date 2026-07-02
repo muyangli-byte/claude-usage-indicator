@@ -326,8 +326,8 @@ fn more_panel(
     // 动作按钮数:[账号*N]+[update?]+refresh+open+check | alert+lang | feedback+about | uninstall/quit+close
     let n: i32 = n_acct + 3 + i32::from(update.is_some()) + 2 + 2 + 2;
     let groups: i32 = 3 + i32::from(n_acct > 0); // 账号组存在时多一处分组间距
-    // 窗宽要容下 POPUP_BAR(24)格进度条 + 右侧百分比(否则百分比被截掉);460 给足余量。
-    let (w, bh, gap, grp) = (460, 34, 8, 12);
+    // 窗宽 440（用户指定）。POPUP_BAR(24)格条 + 右侧百分比在此宽度是否会裁切,以实测截图为准。
+    let (w, bh, gap, grp) = (440, 34, 8, 12);
     let x = 16;
     let bw = w - 2 * x;
     let line_h = 24; // 每行行高:贴近托盘菜单的菜单行高(multiline 单帧那种紧凑行距太挤)
