@@ -12,8 +12,8 @@ use std::time::Instant;
 use tokio::sync::Notify;
 
 /// 进度条格数：托盘下拉菜单用短条(避开 host 尾部截断)，More 弹窗用长条(填满 440px 窗宽)。
-pub(crate) const TRAY_BAR: usize = 16;
-pub(crate) const POPUP_BAR: usize = 22; // 22 格是 440px 弹窗内「条+2空格+100%」不裁切的最大长度(实测 ~12.7px/字符)
+pub(crate) const TRAY_BAR: usize = 24;
+pub(crate) const POPUP_BAR: usize = 24;
 
 fn urlencode(s: &str) -> String {
     s.bytes()
