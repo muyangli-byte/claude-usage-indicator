@@ -17,7 +17,7 @@ use wreq::Client;
 
 type Snap = (Option<f64>, Option<f64>, Option<f64>, Option<f64>);
 fn snap(r: &Raw) -> Snap {
-    (r.five_hour_util, r.seven_day_util, r.sonnet_util, r.opus_util)
+    (r.five_hour_util, r.seven_day_util, r.fable_util, r.opus_util)
 }
 
 fn classify(msg: &str) -> &'static str {

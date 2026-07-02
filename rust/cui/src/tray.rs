@@ -1,4 +1,4 @@
-//! ksni 托盘（纯 SNI/D-Bus，无 GTK）。每档两行（名称|reset + 进度条+%）、Sonnet/Opus 用过才显示、
+//! ksni 托盘（纯 SNI/D-Bus，无 GTK）。每档两行（名称|reset + 进度条+%）、Fable/Opus 用过才显示、
 //! Status 行、Show error details（出故障时）、More…（点开 fltk 动作面板）。
 //! 顶栏内联文字走 XAyatanaLabel（patched ksni）。
 use crate::config::{APP_ID, ID_SUFFIX, LABEL_PREFIX, REPO_URL, VERSION};
@@ -105,7 +105,7 @@ impl CuiTray {
         );
         format!("{REPO_URL}/issues/new?title={}&body={}", urlencode("Feedback: "), urlencode(&body))
     }
-    /// 用量进度条文本（托盘菜单与 More 弹窗同源,保证「完全一样」）：4 行基础 + Sonnet/Opus（用过才有）+ Status 行。
+    /// 用量进度条文本（托盘菜单与 More 弹窗同源,保证「完全一样」）：4 行基础 + Fable/Opus（用过才有）+ Status 行。
     /// main 的 1s 定时器也调它写入共享态,供弹窗实时刷新(倒计时走字)。
     pub(crate) fn usage_lines(&self) -> Vec<String> {
         let r = self.raw.clone().unwrap_or_default();
@@ -116,9 +116,9 @@ impl CuiTray {
             format!("All models | Resets {}", fmt_resetday_long(r.seven_day_reset)),
             format!("{}  {:>4}", bar(r.seven_day_util, 24), pct(r.seven_day_util)),
         ];
-        if used(r.sonnet_util, r.sonnet_reset.is_some()) {
-            v.push("Sonnet only".into());
-            v.push(format!("{}  {:>4}", bar(r.sonnet_util, 24), pct(r.sonnet_util)));
+        if used(r.fable_util, r.fable_reset.is_some()) {
+            v.push("Fable only".into());
+            v.push(format!("{}  {:>4}", bar(r.fable_util, 24), pct(r.fable_util)));
         }
         if used(r.opus_util, r.opus_reset.is_some()) {
             v.push("Opus only".into());

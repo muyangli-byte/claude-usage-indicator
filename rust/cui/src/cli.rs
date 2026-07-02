@@ -31,8 +31,43 @@ pub async fn cmd_once() -> i32 {
         Ok(r) => {
             println!("  current session : {}  (reset {})", pct(r.five_hour_util), fmt_countdown(r.five_hour_reset));
             println!("  all models (wk) : {}  (reset {})", pct(r.seven_day_util), fmt_resetday(r.seven_day_reset));
-            println!("  sonnet (wk)     : {}", pct(r.sonnet_util));
+            println!("  fable (wk)      : {}", pct(r.fable_util));
             println!("  opus (wk)       : {}", pct(r.opus_util));
+            0
+        }
+        Err(e) => {
+            println!("{e}");
+            1
+        }
+    }
+}
+
+/// 打印一次用量的原始 JSON（诊断 API schema 变化，如 sonnet→fable 键名）。用量 JSON 无敏感信息。
+pub async fn cmd_dump_usage() -> i32 {
+    let (sk, org) = match creds::load_credentials().await {
+        Ok(v) => v,
+        Err(e) => {
+            println!("cookie error: {e}");
+            return 2;
+        }
+    };
+    if sk.is_empty() || org.is_empty() {
+        println!("no credentials (login? org?)");
+        return 2;
+    }
+    let client = match api::client() {
+        Ok(c) => c,
+        Err(e) => {
+            println!("{e}");
+            return 1;
+        }
+    };
+    match api::fetch_usage_json(&client, &sk, &org).await {
+        Ok(j) => {
+            if let Some(obj) = j.as_object() {
+                println!("top-level keys: {:?}", obj.keys().collect::<Vec<_>>());
+            }
+            println!("{}", serde_json::to_string_pretty(&j).unwrap_or_default());
             0
         }
         Err(e) => {

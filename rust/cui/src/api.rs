@@ -66,6 +66,25 @@ pub async fn fetch_usage(client: &Client, sk: &str, org: &str) -> Result<Raw> {
     cui_core::validate_and_extract(&j).map_err(|e| anyhow!("schema: {}", e.0))
 }
 
+/// 拉一次用量并返回原始 JSON（诊断用 --dump-usage）。用量 JSON 无敏感信息(只有利用率/重置时刻)。
+pub async fn fetch_usage_json(client: &Client, sk: &str, org: &str) -> Result<serde_json::Value> {
+    let url = format!("https://claude.ai/api/organizations/{org}/usage");
+    let r = client
+        .get(&url)
+        .header("accept", "*/*")
+        .header("anthropic-client-platform", "web_claude_ai")
+        .header("referer", "https://claude.ai/new")
+        .header("cookie", format!("sessionKey={sk}"))
+        .send()
+        .await?;
+    let status = r.status().as_u16();
+    let txt = r.text().await?;
+    if status != 200 {
+        return Err(anyhow!("http: HTTP {status}"));
+    }
+    Ok(serde_json::from_str(&txt)?)
+}
+
 /// 一个组织(公司/个人账号)。多账号枚举与切换用。
 #[derive(Clone, Debug)]
 pub struct Org {

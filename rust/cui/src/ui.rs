@@ -142,6 +142,7 @@ fn usage_alert(pct: u8) -> Window {
     let (w, h) = (560, 240);
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
     win.set_border(false);
+    win.set_xclass("Claude Usage Indicator"); // 任务栏 WM_CLASS(否则显示默认 "FLTK")
     win.set_color(Color::from_rgb(0xe0, 0x31, 0x31));
 
     let mut title = Frame::new(0, 70, w, 70, None);
@@ -198,6 +199,7 @@ fn alert_settings(
     let (w, h) = (440, 230);
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
     win.set_label("Usage alert");
+    win.set_xclass("Claude Usage Indicator"); // 任务栏 WM_CLASS(否则显示默认 "FLTK")
     set_window_icon(&mut win);
 
     let mut head = Frame::new(22, 18, w - 44, 28, None);
@@ -338,6 +340,7 @@ fn more_panel(
     let (sw, sh) = fltk::app::screen_size();
     let mut win = Window::new(((sw - w as f64) / 2.0) as i32, ((sh - h as f64) / 2.0) as i32, w, h, None);
     win.set_label("Claude usage");
+    win.set_xclass("Claude Usage Indicator"); // 任务栏 WM_CLASS(否则显示默认 "FLTK")
     set_window_icon(&mut win);
 
     // 顶部用量行:与托盘菜单同样的文本(bar()+pct())。每行单独一个等高 Frame、垂直居中,行高/间距贴近

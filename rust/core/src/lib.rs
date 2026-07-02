@@ -9,8 +9,8 @@ pub struct Raw {
     pub five_hour_reset: Option<DateTime<Utc>>,
     pub seven_day_util: Option<f64>,
     pub seven_day_reset: Option<DateTime<Utc>>,
-    pub sonnet_util: Option<f64>,
-    pub sonnet_reset: Option<DateTime<Utc>>,
+    pub fable_util: Option<f64>, // 原 Sonnet，2026-07 起 claude.ai 改名 Fable
+    pub fable_reset: Option<DateTime<Utc>>,
     pub opus_util: Option<f64>,
     pub opus_reset: Option<DateTime<Utc>>,
 }
@@ -50,8 +50,9 @@ pub fn json_to_raw(j: &serde_json::Value) -> Raw {
         five_hour_reset: g("five_hour").and_then(reset),
         seven_day_util: g("seven_day").and_then(util),
         seven_day_reset: g("seven_day").and_then(reset),
-        sonnet_util: g("seven_day_sonnet").and_then(util),
-        sonnet_reset: g("seven_day_sonnet").and_then(reset),
+        // 第二档模型：新键 seven_day_fable 优先，回退老键 seven_day_sonnet(兼容未切/已切两种 API)
+        fable_util: g("seven_day_fable").or_else(|| g("seven_day_sonnet")).and_then(util),
+        fable_reset: g("seven_day_fable").or_else(|| g("seven_day_sonnet")).and_then(reset),
         opus_util: g("seven_day_opus").and_then(util),
         opus_reset: g("seven_day_opus").and_then(reset),
     }
@@ -364,11 +365,14 @@ mod tests {
         let raw = json_to_raw(&j);
         assert_eq!(raw.five_hour_util, Some(39.0));
         assert_eq!(raw.seven_day_util, Some(5.0));
-        assert_eq!(raw.sonnet_util, Some(12.0));
+        assert_eq!(raw.fable_util, Some(12.0)); // 老键 seven_day_sonnet 回退仍生效
         assert_eq!(raw.opus_util, Some(0.0));
         assert!(raw.five_hour_reset.is_some());
         assert_eq!(raw.opus_reset, None);
         assert_eq!(json_to_raw(&serde_json::json!({})).five_hour_util, None);
+        // 新键 seven_day_fable 优先
+        let jf = serde_json::json!({"seven_day_fable": {"utilization": 20}});
+        assert_eq!(json_to_raw(&jf).fable_util, Some(20.0));
     }
 
     #[test]

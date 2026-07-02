@@ -39,6 +39,7 @@ async fn main() -> anyhow::Result<()> {
             #[cfg(feature = "dev")]
             "--test-more" => cmd = "testmore", // 弹 More 动作面板
             "--accounts" => cmd = "accounts", // 列出发现的账号(多账号诊断，不打印 sessionKey；prod 也可用)
+            "--dump-usage" => cmd = "dumpusage", // 打印用量原始 JSON(诊断 API schema 变化，无敏感信息)
             "--version" | "-V" => cmd = "version",
             "--help" | "-h" => cmd = "help",
             "--lang" => {
@@ -54,6 +55,7 @@ async fn main() -> anyhow::Result<()> {
     match cmd {
         "once" => std::process::exit(cli::cmd_once().await),
         "check" => std::process::exit(cli::cmd_check().await),
+        "dumpusage" => std::process::exit(cli::cmd_dump_usage().await),
         "doctor" => std::process::exit(cli::cmd_doctor(&lang).await),
         "selfupdate" => std::process::exit(selfupdate::cmd_self_update().await),
         "uninstall" => {
@@ -81,6 +83,8 @@ async fn main() -> anyhow::Result<()> {
                 format!("{}  {:>4}", cui_core::bar(Some(80.0), 24), cui_core::pct(Some(80.0))),
                 "All models | Resets Tue 14:00".into(),
                 format!("{}  {:>4}", cui_core::bar(Some(35.0), 24), cui_core::pct(Some(35.0))),
+                "Fable only".into(),
+                format!("{}  {:>4}", cui_core::bar(Some(13.0), 24), cui_core::pct(Some(13.0))),
                 "Status: ok | Last updated: 0s ago".to_string(),
             ]));
             // 模拟托盘 1s 定时器:每秒更新「Last updated」秒数 → 验证弹窗实时刷新
