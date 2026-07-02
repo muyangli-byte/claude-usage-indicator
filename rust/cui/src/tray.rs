@@ -112,15 +112,17 @@ impl CuiTray {
         let used = |u: Option<f64>, has_reset: bool| has_reset || u.map_or(false, |v| v != 0.0);
         let mut v = vec![
             format!("Current session | Resets in {}", fmt_countdown_long(r.five_hour_reset)),
-            format!("{}  {:>4}", bar(r.five_hour_util, 24), pct(r.five_hour_util)),
+            // 百分比放【行首】：托盘菜单宽度由桌面 host 动态定、尾部 ellipsis 截断。放行尾会切掉关键数字
+            // (13%→1…);放行首后被切的只是进度条尾巴(░),百分比永远可见。总长度不变、More 弹窗不受影响。
+            format!("{:>4}  {}", pct(r.five_hour_util), bar(r.five_hour_util, 24)),
             format!("All models | Resets {}", fmt_resetday_long(r.seven_day_reset)),
-            format!("{}  {:>4}", bar(r.seven_day_util, 24), pct(r.seven_day_util)),
+            format!("{:>4}  {}", pct(r.seven_day_util), bar(r.seven_day_util, 24)),
         ];
         // 按模型周限（来自 limits[]，模型名动态：Fable / Opus / …）—— 用过才显示
         for s in &r.scoped {
             if used(s.util, s.reset.is_some()) {
                 v.push(format!("{} only", s.name));
-                v.push(format!("{}  {:>4}", bar(s.util, 24), pct(s.util)));
+                v.push(format!("{:>4}  {}", pct(s.util), bar(s.util, 24)));
             }
         }
         v.push(format!(
